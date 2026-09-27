@@ -14,6 +14,7 @@ Ported opencode-v2 long-task loop: inbox idempotency, steer, retry, compaction, 
   P0: retry 1+4 (429/5xx), `_bound_for_model` (spill full to `.jobs/`),
   `_drain_steer`, run/item idempotency (+ SQLite cross-restart), per-call isolation.
   P1: `_maybe_compact` per step, write-ahead claims, boot recovery.
+  Fix: `/api/event` waits 10s for run to exist (browser connects before chat POST).
 - `agent.py` — CLI (`python3 agent.py [--model X]`). Same retry/compaction.
 - `tools.py` — **17 tools** + `compact_messages()` rolling-summary helper.
   `websearch` = Exa first, DuckDuckGo fallback (bot-blocked, fails honestly).
@@ -21,12 +22,12 @@ Ported opencode-v2 long-task loop: inbox idempotency, steer, retry, compaction, 
   inspector keeps system prompt only. Live updates via EventSource, Esc interrupts.
 - `system_prompt.md` — agent system prompt (editable in UI).
 - `.env` — keys (git-ignored). See `.env.example`.
-- `opencode-v2-explained.md` — short v2 guide (50 lines). All 3 next-steps done.
-- `p0-test-report.md` — older test report (P0 era).
+- `opencode-v2-explained.md` — short v2 guide. All 3 next-steps done.
+- `todo-app/` — `todo.py` + `test_todo.py` + `AUDIT.md` (agent-written).
 - GitHub: `https://github.com/z67n8n742p-ux/my-project.git` (branch `main`).
 
 ## Key facts
-- Server running `:8000` (PID 10841). `pkill -f server.py` to stop.
+- Server running `:8000` (PID 11346). `pkill -f server.py` to stop.
 - Restart: `NO_BROWSER=1 PORT=8000 nohup python3 server.py > server.restart.log 2>&1 &`
 - Frontend served from disk per request → hard-refresh (`Cmd+Shift+R`) after UI edits.
 - Server restart needed for `server.py`/`tools.py` changes.
@@ -48,6 +49,7 @@ NO_BROWSER=1 PORT=8000 python3 server.py   # open http://localhost:8000
 - `/api/models` falls back to static list if MaxPlus fetch fails.
 - No `EXA_API_KEY` → websearch honestly says blocked.
 - History cap 60 in UI; compaction at 60 msgs / 80k chars, keeps newest 20.
+- EventSource 404s permanently on error — hence the 10s server-side wait.
 - User has ADHD → keep reports short, tables over prose.
 
 ## Suggested next steps

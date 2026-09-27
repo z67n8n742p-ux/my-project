@@ -427,7 +427,17 @@ class Handler(BaseHTTPRequestHandler):
             done = run.get("done") if run else None
         stored = None
         if run is None:
-            stored = _store_get(rid)
+            # race: browser opens the stream just before POST /api/chat creates the run — wait for it
+            deadline = _t.time() + 10
+            while run is None and _t.time() < deadline:
+                _t.sleep(0.2)
+                with RUNS_LOCK:
+                    run = RUNS.get(rid)
+            if run is not None:
+                snap = list(run["logs"])
+                done = run.get("done")
+            else:
+                stored = _store_get(rid)
         if run is None and stored is None:
             self.send_json({"ok": False, "error": "unknown run"}, 404)
             return

@@ -1,0 +1,12 @@
+.env
+__pycache__/
+.todos.json
+server.log
+server.restart.log
+.sessions/
+.jobs/
+.venv/
+*/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

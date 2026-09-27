@@ -1,0 +1,504 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>formyproject agent</title>
+<style>
+/* Theme tokens (v2-desktop inspired: flat CSS vars, dark default + light override) */
+:root{
+ --bg:#0f1115;--bg-deep:#0b0d11;--layer:#171a21;--layer-2:#1e222c;
+ --text:#e6e6e6;--muted:#9aa0ae;--faint:#6b7280;
+ --border:#2a2e38;--border-strong:#333a48;
+ --hover:#2b3342;--accent:#2b6cb0;--accent-text:#7fd07f;
+ --error:#e06c75;--diff-add:#1d3a24;--diff-del:#3d2226;
+ --link:#9dbefe;--code-bg:rgba(230,230,230,.08);
+ --sans:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+ --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+ color-scheme:dark;
+}
+@media (prefers-color-scheme:light){
+ :root{
+  --bg:#f4f5f7;--bg-deep:#e9ebef;--layer:#ffffff;--layer-2:#eef0f4;
+  --text:#1a1d23;--muted:#5b6472;--faint:#8a93a3;
+  --border:#dfe3ea;--border-strong:#c9d0dc;
+  --hover:#e3e8f0;--accent:#2b6cb0;--accent-text:#1c7a3d;
+  --error:#b3261e;--diff-add:#dff3e4;--diff-del:#fbe3e5;
+  --link:#2c47c8;--code-bg:rgba(20,20,20,.06);
+  color-scheme:light;
+ }
+}
+*{box-sizing:border-box}
+body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:var(--bg);color:var(--text)}
+/* v2 type scale: chrome 13px, messages 14px/160%, h1 17 h2 15 h3 13 */
+.msg{font-size:14px;line-height:1.6;overflow-wrap:break-word}
+.msg h1{font-size:17px;font-weight:600;margin:18px 0 10px}
+.msg h2{font-size:15px;font-weight:600;margin:16px 0 8px}
+.msg h3,.msg h4{font-size:13px;font-weight:500;margin:14px 0 6px;color:var(--muted)}
+.msg p{margin:0 0 12px}.msg p:last-child{margin-bottom:0}
+.msg a{color:var(--link);text-decoration:none}
+.msg a:hover{text-decoration:underline;text-underline-offset:2px}
+.msg ul,.msg ol{margin:8px 0 12px;padding-left:28px}
+.msg li{margin-bottom:6px}.msg li::marker{color:var(--muted)}
+.msg blockquote{border-inline-start:2px solid var(--border-strong);margin:12px 0;padding-left:10px;color:var(--muted)}
+.msg table{display:block;overflow-x:auto;margin:12px 0;font-size:13px;border-collapse:collapse}
+.msg th,.msg td{border-bottom:1px solid var(--border);padding:8px 12px;text-align:left;vertical-align:top}
+.msg th{font-weight:500}
+.msg hr{border:none;border-top:1px solid var(--border);margin:20px 0}
+.seclabel{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+/* Titlebar (desktop shell pattern) */
+header[data-slot="titlebar"]{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--layer);border-bottom:1px solid var(--border)}
+header b{white-space:nowrap}
+select,textarea,input,button{background:var(--layer-2);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:8px}
+button{cursor:pointer}button:hover{background:var(--hover)}
+#layout{display:flex;height:calc(100vh - 57px)}
+/* Sessions sidebar (desktop tabs pattern, persisted to localStorage) */
+aside[data-slot="sessions-sidebar"]{width:220px;min-width:220px;background:var(--bg-deep);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px;gap:6px;overflow:auto}
+aside[data-slot="sessions-sidebar"] h4{margin:4px 2px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.sess{padding:8px;border-radius:8px;cursor:pointer;font-size:13px;border:1px solid transparent;display:flex;justify-content:space-between;gap:6px;align-items:center}
+.sess:hover{background:var(--hover)}
+.sess.active{background:var(--layer-2);border-color:var(--border-strong)}
+.sess .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.sess .x{color:var(--faint);border:none;background:none;padding:2px 6px}
+.sess .x:hover{color:var(--error)}
+.sess .time{font-size:11px;color:var(--faint);white-space:nowrap}
+.ghead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:8px 4px 2px}
+.sess-empty{font-size:13px;color:var(--muted);padding:8px 4px}
+/* v2 empty state: centered, no art, title + desc + CTA */
+.empty-state{text-align:center;padding-top:52px;display:flex;flex-direction:column;gap:12px;align-items:center}
+.empty-state .et{font-size:13px;font-weight:500}
+.empty-state .ed{font-size:13px;color:var(--muted)}
+.tippill{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);font-size:13px;color:var(--muted);background:var(--layer-2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;display:flex;gap:8px;align-items:center;z-index:20;animation:msg-in .3s ease-out}
+.tippill button{border:none;background:none;color:var(--faint);padding:0 4px}
+.tippill button:hover{color:var(--text)}
+/* Chat panel */
+main[data-slot="session-chat-panel"]{flex:2;display:flex;flex-direction:column;padding:12px;gap:10px;min-width:0}
+/* Inspector */
+aside[data-slot="inspector"]{flex:1;border-left:1px solid var(--border);padding:12px;overflow:auto;max-width:380px;min-width:260px;background:var(--bg)}
+#modelWrap{position:relative}
+#modelFilter{width:230px}
+#modelList{position:absolute;top:38px;left:0;width:300px;max-height:320px;overflow:auto;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:8px;display:none;z-index:10}
+.mgroup{padding:6px 8px 2px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.mopt{padding:8px;cursor:pointer;font-size:13px;display:flex;gap:6px;align-items:center}
+.mopt:hover,.mopt.active{background:var(--hover)}
+.mopt.sel{color:var(--accent-text)}
+.mopt .tick{margin-left:auto;color:var(--accent-text)}
+#msgs{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.msg{padding:10px;border-radius:10px;max-width:88%;white-space:pre-wrap}
+.user{background:var(--accent);color:#fff;align-self:flex-end}
+.assistant{background:var(--layer-2);align-self:flex-start}
+.tool{font-size:12px;background:var(--bg-deep);border:1px solid var(--border);border-radius:8px;margin-top:6px;overflow:hidden}
+.tool-head{padding:6px 8px;cursor:pointer;display:flex;gap:6px;align-items:center;user-select:none}
+.tool-head:hover{background:var(--hover)}
+.tool-head .caret{color:var(--faint);font-size:10px;width:12px}
+.tool-head .fname{font-family:var(--mono);font-weight:600}
+.tool-head .fsub{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tool-body{display:none;padding:6px 8px;border-top:1px solid var(--border);font-family:var(--mono);white-space:pre-wrap;word-break:break-word}
+.tool.open .tool-body{display:block}
+.tool.err{border-color:var(--error)}
+#msgs>.tool{max-width:88%;align-self:flex-start}
+#row{display:flex;gap:8px;align-items:flex-end}#row textarea{flex:1;resize:none;max-height:120px;overflow:auto;font-family:var(--sans);font-size:13px;line-height:20px}
+#row textarea::placeholder{color:var(--faint)}
+#sys{width:100%;height:90px;font-family:var(--mono);font-size:12px}
+h4{margin:12px 0 6px}
+/* ---------- motion (ported from opencode v2 packages/ui) ---------- */
+@keyframes msg-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}
+@keyframes shimmer-sweep{0%{background-position:100% 0}100%{background-position:0% 0}}
+@keyframes pulse-dot{0%,100%{opacity:.4}50%{opacity:1}}
+.msg{animation:msg-in .25s ease-out}
+#modelList{animation:pop-in .12s ease-out;transform-origin:top left}
+.tool{animation:msg-in .2s ease-out}
+.tool-head .caret{transition:transform .15s ease}
+.tool.open .tool-head .caret{transform:rotate(90deg)}
+.sess,.mopt,button,.tool-head{transition:background .15s ease}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent-text);border-radius:50%;animation:spin .9s linear infinite;vertical-align:-2px;margin-right:8px}
+.shimmer{background:linear-gradient(90deg,var(--muted) 40%,var(--text) 50%,var(--muted) 60%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shimmer-sweep 1.2s linear infinite}
+.cursor{animation:blink 1s step-end infinite;color:var(--muted)}
+#status.live::before{content:"●";color:var(--accent-text);margin-right:4px;animation:pulse-dot 2s ease-in-out infinite}
+/* v2 code treatment: block dark + radius + hover copy; inline pill */
+.msg pre{position:relative;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;font-family:var(--mono);font-size:13px;margin:12px 0}
+.msg pre code{font-family:inherit;background:none;padding:0}
+.msg :not(pre)>code{font-family:var(--mono);font-size:12.5px;background:var(--code-bg);padding:0 4px;border-radius:4px}
+.copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
+.msg pre:hover .copybtn{opacity:1}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head>
+<body>
+<header data-slot="titlebar">
+<b>formyproject agent</b>
+<div id="modelWrap" data-component="model-selector">
+<input id="modelFilter" placeholder="filter models..." autocomplete="off" role="combobox" aria-expanded="false">
+<div id="modelList" data-slot="model-selector-list"></div>
+</div>
+<span id="modelNow" style="font-size:12px;color:var(--accent-text)"></span>
+<span id="status" style="font-size:12px;color:var(--muted)"></span>
+<span style="flex:1"></span>
+<button id="newBtn" title="New session">+ New</button>
+</header>
+<div id="layout">
+<aside data-slot="sessions-sidebar">
+<h4>Sessions</h4>
+<input id="sessSearch" placeholder="Search sessions" autocomplete="off" style="width:100%">
+<div id="sessList"></div>
+</aside>
+<main data-slot="session-chat-panel">
+<div id="msgs" data-slot="timeline"></div>
+<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button onclick="send()">Send</button></div>
+</main>
+<aside data-slot="inspector">
+<h4>System prompt (your own)</h4>
+<textarea id="sys"></textarea><br><br>
+<button onclick="saveSys()">Save system prompt</button>
+</aside>
+</div>
+<script>
+// ---------- session store (desktop tabs pattern, localStorage) ----------
+const LS_SESS='formy.sessions.v1', LS_ACTIVE='formy.active.v1';
+let sessions={}, activeId=null;
+function loadStore(){
+ try{sessions=JSON.parse(localStorage.getItem(LS_SESS)||'{}');}catch(e){sessions={};}
+ activeId=localStorage.getItem(LS_ACTIVE);
+ if(!activeId||!sessions[activeId]){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:'',updated:Date.now()};}
+}
+function saveStore(){
+ try{localStorage.setItem(LS_SESS,JSON.stringify(sessions));localStorage.setItem(LS_ACTIVE,activeId);}catch(e){}
+}
+function cur(){return sessions[activeId];}
+// v2 coarse relative time: Just now / Nm ago / Nh ago / Nd ago
+function relTime(ts){
+ let s=Math.max(0,(Date.now()-(ts||Date.now()))/1000);
+ if(s<60)return 'Just now';
+ if(s<3600)return Math.floor(s/60)+'m ago';
+ if(s<86400)return Math.floor(s/3600)+'h ago';
+ return Math.floor(s/86400)+'d ago';
+}
+function dayGroup(ts){
+ let d=new Date(ts||Date.now()),now=new Date();
+ let day=x=>x.getFullYear()+'-'+x.getMonth()+'-'+x.getDate();
+ if(day(d)===day(now))return 'Today';
+ let y=new Date(now);y.setDate(now.getDate()-1);
+ if(day(d)===day(y))return 'Yesterday';
+ return 'Older';
+}
+function exportSession(id){
+ let s=sessions[id];if(!s)return;
+ let out='# '+(s.title||'Untitled')+'\n\n';
+ (s.history||[]).forEach(h=>{out+='## '+(h.role==='user'?'User':'Assistant')+'\n\n'+h.content+'\n\n';});
+ let a=document.createElement('a');
+ a.href=URL.createObjectURL(new Blob([out],{type:'text/markdown'}));
+ a.download='session-'+id+'.md';a.click();
+ setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+function renderSessions(){
+ let box=document.getElementById('sessList');box.innerHTML='';
+ let q=((document.getElementById('sessSearch')||{}).value||'').toLowerCase();
+ let ids=Object.keys(sessions).sort((a,b)=>(sessions[b].updated||0)-(sessions[a].updated||0));
+ if(q)ids=ids.filter(id=>(sessions[id].title||'').toLowerCase().includes(q));
+ if(!ids.length){box.innerHTML='<div class="sess-empty">'+(q?'No sessions found for "'+q+'"':'Nothing here yet')+'</div>';return;}
+ let groups={};
+ ids.forEach(id=>{(groups[dayGroup(sessions[id].updated)]=groups[dayGroup(sessions[id].updated)]||[]).push(id);});
+ ['Today','Yesterday','Older'].forEach(g=>{
+  if(!groups[g]||(!groups[g].length))return;
+  if(ids.length>2||g!=='Today'){let gh=document.createElement('div');gh.className='ghead';gh.textContent=g;box.appendChild(gh);}
+  groups[g].forEach(id=>{
+   let d=document.createElement('div');d.className='sess'+(id===activeId?' active':'');
+   let t=document.createElement('span');t.className='t';t.textContent=sessions[id].title||'Untitled';t.title='double-click to rename';
+   t.ondblclick=e=>{e.stopPropagation();let n=prompt('Rename session',sessions[id].title);if(n){sessions[id].title=n.slice(0,80);saveStore();renderSessions();}};
+   let tm=document.createElement('span');tm.className='time';tm.textContent=relTime(sessions[id].updated);
+   let e=document.createElement('button');e.className='x';e.textContent='⤓';e.title='Export…';
+   e.onclick=ev=>{ev.stopPropagation();exportSession(id);};
+   let x=document.createElement('button');x.className='x';x.textContent='×';x.title='Delete…';
+   x.onclick=e=>{e.stopPropagation();if(!confirm('Delete session "'+(sessions[id].title||'Untitled')+'"?'))return;delete sessions[id];if(id===activeId||!sessions[activeId]){activeId=Object.keys(sessions)[0]||('s-'+Date.now());if(!sessions[activeId])sessions[activeId]={title:'New session',history:[],model:'',updated:Date.now()};}saveStore();renderSessions();rerenderMsgs();};
+   d.onclick=()=>{activeId=id;saveStore();renderSessions();rerenderMsgs();};
+   d.appendChild(t);d.appendChild(tm);d.appendChild(e);d.appendChild(x);box.appendChild(d);
+  });
+ });
+}
+function rerenderMsgs(){
+ let box=document.getElementById('msgs');box.innerHTML='';
+ let h=cur().history||[];
+ if(!h.length){
+  let e=document.createElement('div');e.className='empty-state';
+  e.innerHTML='<div class="et">Nothing here yet</div><div class="ed">Ask anything below to get started</div>';
+  let b=document.createElement('button');b.textContent='New session';b.onclick=newSession;
+  e.appendChild(b);box.appendChild(e);
+ }
+ h.forEach(m=>addMsg(m.role==='user'?'user':'assistant',m.content,true));
+ maybeTip();
+}
+function maybeTip(){
+ document.querySelectorAll('.tippill').forEach(x=>x.remove());
+ try{if(localStorage.getItem('formy.tip.dismissed'))return;}catch(e){return;}
+ let p=document.createElement('div');p.className='tippill';
+ let s=document.createElement('span');s.textContent='› Tip: filter models in the titlebar, tune your system prompt on the right';
+ let x=document.createElement('button');x.textContent='×';x.title='Dismiss';
+ x.onclick=()=>{try{localStorage.setItem('formy.tip.dismissed','1');}catch(e){}p.remove();};
+ p.appendChild(s);p.appendChild(x);document.body.appendChild(p);
+}
+function newSession(){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:selectedModel,updated:Date.now()};saveStore();renderSessions();rerenderMsgs();}
+document.getElementById('newBtn').onclick=newSession;
+document.getElementById('sessSearch').addEventListener('input',renderSessions);
+
+// ---------- model picker (grouped by provider, keyboard nav) ----------
+let allModels=[], selectedModel="", activeIdx=0, flatShown=[];
+function providerOf(id){
+ let m=/^([a-z]+)/.exec(id||'');return (m&&m[1])||'other';
+}
+function renderModels(f){
+ let list=document.getElementById('modelList');list.innerHTML='';
+ let q=(f||'').toLowerCase();
+ flatShown=allModels.filter(x=>x.toLowerCase().includes(q)).slice(0,100);
+ let groups={};
+ flatShown.forEach(x=>{(groups[providerOf(x)]=groups[providerOf(x)]||[]).push(x);});
+ Object.keys(groups).sort().forEach(g=>{
+  let gh=document.createElement('div');gh.className='mgroup';gh.textContent=g;list.appendChild(gh);
+  groups[g].forEach(x=>{
+   let idx=flatShown.indexOf(x);
+   let d=document.createElement('div');d.className='mopt'+(x===selectedModel?' sel':'')+(idx===activeIdx?' active':'');
+   let s=document.createElement('span');s.textContent=x;d.appendChild(s);
+   if(x===selectedModel){let t=document.createElement('span');t.className='tick';t.textContent='✓';d.appendChild(t);}
+   d.onclick=()=>pickModel(x);
+   list.appendChild(d);
+  });
+ });
+ list.style.display=flatShown.length?'block':'none';
+ document.getElementById('modelFilter').setAttribute('aria-expanded',flatShown.length?'true':'false');
+}
+function pickModel(x){selectedModel=x;cur().model=x;saveStore();document.getElementById('modelNow').textContent=x;document.getElementById('modelList').style.display='none';document.getElementById('modelFilter').value=x;}
+document.addEventListener('click',e=>{if(!document.getElementById('modelWrap').contains(e.target))document.getElementById('modelList').style.display='none';});
+
+// ---------- tool renderer (one collapsible, family switch) ----------
+function familyOf(t){
+ if(['read','edit','write','apply_patch'].includes(t))return{icon:'📄',label:'file'};
+ if(['bash'].includes(t))return{icon:'⌨',label:'shell'};
+ if(['grep','glob','lsp'].includes(t))return{icon:'🔍',label:'search'};
+ if(['webfetch','websearch'].includes(t))return{icon:'🌐',label:'web'};
+ if(['subagent','models','question','skill','todowrite','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
+ return{icon:'🔧',label:'tool'};
+}
+function subOf(tool,args){
+ try{
+  if(tool==='bash')return String(args.command||'').slice(0,120);
+  if(tool==='read'||tool==='edit'||tool==='write')return String(args.filePath||args.path||'').slice(0,120);
+  if(tool==='apply_patch')return 'patch ' + String(args.patchText||'').slice(0,60).replace(/\n/g,' ');
+  if(tool==='grep')return String(args.pattern||'').slice(0,100);
+  if(tool==='glob')return String(args.pattern||'').slice(0,100);
+  if(tool==='webfetch')return String(args.url||'').slice(0,120);
+  if(tool==='websearch')return String(args.query||'').slice(0,120);
+  if(tool==='subagent')return String(args.description||args.prompt||'').slice(0,120);
+  return JSON.stringify(args).slice(0,120);
+ }catch(e){return '';}
+}
+function renderTool(x){
+ let f=familyOf(x.tool);
+ let d=document.createElement('div');d.className='tool';
+ let res=String(x.result||'');
+ if(/^.*(error|failed|not found)/i.test(res.slice(0,200)))d.classList.add('err');
+ let head=document.createElement('div');head.className='tool-head';
+ let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
+ let icon=document.createElement('span');icon.textContent=f.icon;
+ let fn=document.createElement('span');fn.className='fname';fn.textContent=x.tool;
+ let fs=document.createElement('span');fs.className='fsub';fs.textContent=subOf(x.tool,x.args||{});
+ head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);
+ let body=document.createElement('div');body.className='tool-body';
+ body.textContent='args: '+JSON.stringify(x.args)+'\n\n'+res.slice(0,2000);
+ head.onclick=()=>{d.classList.toggle('open');caret.textContent=d.classList.contains('open')?'▼':'▶';};
+ if(d.classList.contains('err')){d.classList.add('open');caret.textContent='▼';}
+ d.appendChild(head);d.appendChild(body);
+ // desktop-style: tools render inline in the chat timeline, in order
+ let t=document.getElementById('msgs');
+ t.appendChild(d);d.scrollIntoView();
+ let olds=t.querySelectorAll(':scope > .tool');
+ if(olds.length>100)olds[0].remove();
+}
+
+// ---------- init / chat (same /api contract) ----------
+async function init(){
+ try{
+  let m=await (await fetch('/api/models')).json();
+  allModels=m.models||[];
+  loadStore();
+  selectedModel=cur().model&&allModels.includes(cur().model)?cur().model:(m.default||allModels[0]||'');
+  cur().model=selectedModel;
+  document.getElementById('modelNow').textContent=selectedModel;
+  document.getElementById('modelFilter').value=selectedModel;
+  let mf=document.getElementById('modelFilter');
+  mf.addEventListener('input',e=>{activeIdx=0;renderModels(e.target.value);});
+  mf.addEventListener('focus',e=>{activeIdx=0;renderModels(e.target.value);});
+  mf.addEventListener('keydown',e=>{
+   if(document.getElementById('modelList').style.display!=='block')return;
+   if(e.key==='ArrowDown'){e.preventDefault();activeIdx=Math.min(flatShown.length-1,activeIdx+1);renderModels(mf.value);}
+   else if(e.key==='ArrowUp'){e.preventDefault();activeIdx=Math.max(0,activeIdx-1);renderModels(mf.value);}
+   else if(e.key==='Enter'){e.preventDefault();if(flatShown[activeIdx])pickModel(flatShown[activeIdx]);}
+   else if(e.key==='Escape'){document.getElementById('modelList').style.display='none';}
+  });
+  document.getElementById('status').textContent=m.has_key?'key: set':'key: MISSING (check .env MAXPLUS_API_KEY)';
+  document.getElementById('status').classList.toggle('live',!!m.has_key);
+  let s=await (await fetch('/api/system')).json();
+  document.getElementById('sys').value=s.system||'';
+  renderSessions();rerenderMsgs();
+ }catch(e){
+  document.getElementById('status').textContent='BACKEND UNREACHABLE';
+  addMsg('assistant','ERROR: cannot reach server.py at '+location.origin+' — open http://localhost:8000 (not file://), and keep server.py running. '+e);
+ }
+}
+async function saveSys(){
+ await fetch('/api/system',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:document.getElementById('sys').value})});
+ alert('saved to system_prompt.md');
+}
+// ---------- lightweight markdown (v2 markdown.css treatment, no deps) ----------
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function inline(s){
+ s=esc(s);
+ s=s.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+ s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+ s=s.replace(/(^|\W)\*([^*\n]+)\*/g,'$1<em>$2</em>');
+ s=s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+ return s;
+}
+function md(src){
+ let fences=[];
+ // extract fenced blocks first so inner markdown chars are untouched
+ src=String(src).replace(/```(\w*)\n([\s\S]*?)(```|$)/g,(m,lang,code)=>{
+  fences.push('<pre><button class="copybtn">Copy</button><code>'+esc(code.replace(/\n$/,''))+'</code></pre>');
+  return '\u0000'+(fences.length-1)+'\u0000';
+ });
+ let lines=src.split('\n'),html='',i=0,list=null;
+ function closeList(){if(list){html+='</'+list+'>';list=null;}}
+ while(i<lines.length){
+  let ln=lines[i];
+  if(/^\u0000\d+\u0000$/.test(ln.trim())){closeList();let k=+ln.trim().replace(/\u0000/g,'');html+=fences[k]||'';i++;continue;}
+  let h=ln.match(/^(#{1,4})\s+(.*)/);
+  if(h){closeList();let lv=Math.min(3,h[1].length);html+='<h'+lv+'>'+inline(h[2])+'</h'+lv+'>';i++;continue;}
+  if(/^\s*&gt;|^\s*>/.test(ln)){closeList();html+='<blockquote>'+inline(ln.replace(/^\s*>?\s?/,''))+'</blockquote>';i++;continue;}
+  if(/^\s*---+\s*$/.test(ln)){closeList();html+='<hr>';i++;continue;}
+  // tables: header | sep | rows
+  if(/\|/.test(ln)&&i+1<lines.length&&/^\s*\|?[\s:|-]+\|?[\s:|-]*$/.test(lines[i+1])){
+   closeList();
+   let cells=ln.split('|').filter(c=>c.trim()!=='').map(c=>inline(c.trim()));
+   html+='<table><tr>'+cells.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
+   i+=2;
+   while(i<lines.length&&/\|/.test(lines[i])){let r=lines[i].split('|').filter(c=>c.trim()!=='').map(c=>inline(c.trim()));html+='<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>';i++;}
+   html+='</table>';continue;
+  }
+  let ul=ln.match(/^\s*[-*]\s+(.*)/),ol=ln.match(/^\s*\d+[.)]\s+(.*)/);
+  if(ul||ol){
+   let kind=ul?'ul':'ol',txt=inline((ul?ul[1]:ol[1]));
+   // task items: - [ ] / - [x]
+   let task=txt.match(/^\[( |x)\]\s*(.*)/);
+   if(task)txt=(task[1]==='x'?'☑ ':'☐ ')+task[2];
+   if(list!==kind){closeList();html+='<'+kind+'>';list=kind;}
+   html+='<li>'+txt+'</li>';i++;continue;
+  }
+  if(!ln.trim()){closeList();i++;continue;}
+  closeList();
+  // gather paragraph lines
+  let para=[ln];
+  while(i+1<lines.length&&lines[i+1].trim()&&!/^(#{1,4}\s|```|\s*[-*]\s|\s*\d+[.)]\s|\s*>|\s*---+\s*)/.test(lines[i+1])&&!/\|/.test(lines[i+1])&&!/^\u0000\d+\u0000$/.test(lines[i+1].trim())){para.push(lines[++i]);}
+  html+='<p>'+para.map(inline).join('<br>')+'</p>';i++;
+ }
+ closeList();
+ return html;
+}
+document.addEventListener('click',e=>{
+ if(e.target&&e.target.classList&&e.target.classList.contains('copybtn')){
+  let code=e.target.parentElement.querySelector('code');
+  let done=()=>{e.target.textContent='Copied';setTimeout(()=>e.target.textContent='Copy',1200);};
+  if(navigator.clipboard&&code)navigator.clipboard.writeText(code.textContent).then(done,done);
+  else done();
+ }
+});
+function addMsg(role,text,silent){
+ let box=document.getElementById('msgs');
+ box.querySelectorAll('.empty-state').forEach(x=>x.remove());
+ let d=document.createElement('div');d.className='msg '+role;
+ if(role==='assistant'&&text&&!String(text).startsWith('ERROR')&&!String(text).startsWith('... '))d.innerHTML=md(text);
+ else d.textContent=text;
+ document.getElementById('msgs').appendChild(d);d.scrollIntoView();return d;
+}
+let currentRid=null, isRunning=false, steerBuffer=[];
+async function send(){
+ let inp=document.getElementById('in');let msg=inp.value.trim();if(!msg)return;inp.value='';autogrow();
+ let filterVal=document.getElementById('modelFilter').value.trim();
+ if(!allModels.includes(selectedModel)){
+  if(allModels.includes(filterVal)){pickModel(filterVal);}
+  else{addMsg('assistant','ERROR: unknown model "'+(filterVal||selectedModel)+'". Pick one from the dropdown.');return;}
+ }
+ if(filterVal&&filterVal!==selectedModel&&allModels.includes(filterVal)){pickModel(filterVal);}
+ document.getElementById('modelNow').textContent=selectedModel;
+ // P0-2: Safe Step Boundary — follow-ups while running go to /api/steer, never a racy second run
+ if(isRunning&&currentRid){
+  addMsg('user',msg);
+  try{
+   let s=await (await fetch('/api/steer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
+   if(s.ok){steerBuffer.push(msg);return;}
+   // run finished between keystroke and POST: fall through to normal new chat below
+   isRunning=false;currentRid=null;
+   addMsg('assistant','... previous run finished, sending as new chat ...');
+  }catch(e){steerBuffer.push(msg);return;}
+ }
+ addMsg('user',msg);
+ let history=cur().history||[];
+ let sys=document.getElementById('sys').value;
+ let model=selectedModel;
+ let wait=addMsg('assistant','');
+ wait.innerHTML='<span class="spin"></span><span class="shimmer">thinking</span><span class="cursor">▍</span>';
+  setRunning(true);
+   // live background view: SSE push from /api/event (one connection, no 800ms polling)
+   let rid='r-'+Date.now()+'-'+Math.floor(Math.random()*1e6);
+   currentRid=rid;isRunning=true;steerBuffer=[];
+   let liveShown=0;
+   let es=null;
+   function stopLive(){try{if(es)es.close();}catch(_){}es=null;}
+   try{
+    es=new EventSource('/api/event?run='+encodeURIComponent(rid));
+    es.onmessage=e=>{try{let log=JSON.parse(e.data);renderTool(log);liveShown++;}catch(_){}};
+    es.addEventListener('done',stopLive);
+    es.onerror=()=>{/* server closes stream at done; final sweep below covers gaps */};
+   }catch(e){es=null;}
+  try{
+   // P0-1: run+item_id is the idempotency key — network retry with same rid never forks a second LLM loop
+   let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
+   console.log('[send]',model,msg.slice(0,120));
+   let resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)});
+   if(resp.status===409){let t=await resp.text();throw new Error('already running (retry with same id is deduped): '+t.slice(0,200));}
+   if(!resp.ok){let t=await resp.text();throw new Error('HTTP '+resp.status+': '+t.slice(0,300));}
+   let r=await resp.json();
+   wait.remove();
+   stopLive();
+   setRunning(false);
+   if(!r.ok){addMsg('assistant','ERROR: '+r.error);isRunning=false;currentRid=null;return;}
+   if(r.queued){addMsg('assistant','... queued behind running session ...');isRunning=false;currentRid=null;return;}
+   addMsg('assistant',r.reply+(r.deduped?' (deduped retry)':''));
+   history.push({role:'user',content:msg});
+   steerBuffer.forEach(m=>history.push({role:'user',content:m}));
+   history.push({role:'assistant',content:r.reply});
+   cur().history=history.slice(-60);cur().updated=Date.now();
+   if((cur().title||'').startsWith('New session'))cur().title=msg.slice(0,50);
+   saveStore();renderSessions();
+   // render any tools the live stream missed (dedupe by count)
+   (r.tools||[]).forEach((x,i)=>{if(i>=liveShown)renderTool(x);});
+   isRunning=false;currentRid=null;steerBuffer=[];
+   }catch(e){stopLive();setRunning(false);isRunning=false;currentRid=null;wait.remove();console.error('[send failed]',e);addMsg('assistant','ERROR: fetch failed — is server.py running? '+e);}
+}
+// v2 composer keys: Enter=send, Shift+Enter=newline, Esc=interrupt-while-running else blur
+async function interrupt(){
+ if(!isRunning||!currentRid)return;
+ try{await fetch('/api/interrupt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid})});}catch(e){}
+}
+function autogrow(){let t=document.getElementById('in');t.style.height='auto';t.style.height=Math.min(120,t.scrollHeight)+'px';}
+document.getElementById('in').addEventListener('input',autogrow);
+document.getElementById('in').addEventListener('keydown',e=>{
+ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+ else if(e.key==='Escape'){if(isRunning&&currentRid)interrupt();else e.target.blur();}
+});
+function setRunning(running){
+ document.getElementById('in').placeholder=running
+  ?'Add follow-up, / for commands, @ for context…'
+  :'Ask anything, / for commands, @ for context…';
+}
+init();
+</script>
+</body></html>

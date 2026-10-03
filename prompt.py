@@ -1,12 +1,14 @@
 """Prompt assembly (Hermes prompt_builder pattern, minimal port).
 
 Tiers: stable (SOUL + AGENTS) -> context (legacy system_prompt.md / UI text)
-       -> volatile (MEMORY + USER snapshot, frozen per session start).
+       -> volatile (MEMORY + USER snapshot, re-read every turn).
 
 Contract:
   - Never raises: missing files yield empty sections.
   - Never breaks the UI: /api/system still edits system_prompt.md only.
   - Memory snapshot shows usage % so the model self-limits.
+  - Snapshot is live (re-read per /api/chat), not frozen: memory edits
+    take effect on the next turn without a restart.
 """
 from pathlib import Path
 

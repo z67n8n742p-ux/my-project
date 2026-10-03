@@ -32,183 +32,192 @@ you type -> inbox -> runner loop -> tools -> repeat -> done
 - Tool output: save full text to file, send short preview to model.
 - Crash: mark old `running` tools as `failed`, then continue. No magic replay.
 
-## How it maps to this project
+## How it maps to this project (current)
 
 | v2 idea | Here today |
 |---|---|
-| Inbox + IDs | Done: `run + item_id`, resend = `deduped:true` |
-| Safe boundary | Done: `/api/steer`, drain between steps |
-| Retry 1+4 | Done: `_chat_create_with_retry`, 429/5xx only |
-| Bound output | Done: `_bound_for_model`, full in `.jobs/` |
-| 1 bad tool isolation | Done: try/except per call |
-| Compaction | Done: `compact_messages` in `tools.py`, per-step check, 62→22 live-verified |
-| SSE events | Done: `GET /api/event` stream + frontend EventSource, `/api/progress` kept for compat |
-| Save to disk | Done: SQLite `.sessions/store.db` (runs + write-ahead claims, boot recovery), jsonl turns |
-
-## What to do next (in order)
-
-1. ~~Compaction~~ done. ~~SSE~~ done. ~~SQLite~~ done.
-2. Next options: syntax highlighting, session export with tool logs, real MCP config.
+| Inbox + IDs | Done: `run + item_id`, resend = `deduped:true` (mem + SQLite cross-restart, 409 if in-flight) |
+| Safe boundary | Done: `/api/steer` + `queue` mode, `_drain_steer()` between steps |
+| Retry 1+4 | Done: `_chat_create_with_retry`, 429/5xx only, never 4xx; plus `_model_chain` fallback (`FORMY_FALLBACK_MODELS`) |
+| Bound output | Done: 8k cap, head 4k + tail 4k, full spill to `.jobs/` |
+| 1 bad tool isolation | Done: per-call try/except + `run_tool_calls()` (parallel, order-restored) |
+| Compaction | Done: `compact_messages()`, per-step check at 60 msgs / 80k chars, keeps newest 20, never splits tool pairs |
+| SSE events | Done: `GET /api/event` stream + `/api/progress` compat + 10s wait for run race |
+| Save to disk | Done: SQLite `.sessions/store.db` (runs + messages + FTS5), jsonl turns, boot recovery, cron overlap guard |
+| POST safety | Done: 10MB cap → 413, bad `Content-Length` → 400, never crashes |
 
 ---
 
 # Hermes-agent vs formyproject — coding-agent deep comparison
 
 Source: `https://github.com/nousresearch/hermes-agent` (docs: architecture, agent-loop, tools-runtime, session-storage, memory).
-Here = `server.py` + `agent.py` + `tools.py` + `index.html` (opencode-v2 port).
+Here = `server.py` + `agent.py` + `tools.py` + `backends.py` + `approval.py` + `prompt.py` + `cron.py` + `index.html`.
 
 ## 1-line difference
 
 | | Hermes | formyproject |
 |---|---|---|
-| Goal | Self-improving general agent that lives on every platform | Minimal localhost coding-agent clone of opencode-v2 |
-| Size | ~47k commits scale, 70+ tools, 28 toolsets, ~25k tests | 3 Python files, 17 tools, 1 test app (`todo-app/`) |
+| Goal | Self-improving general agent on every platform | Single-user localhost coding agent (MaxPlus AI) |
+| Size | Dozens of modules, 70+ tools, ~28 toolsets | 7 Python files, 23 tools, 6 toolsets, 1 test app (`todo-app/`, 13 tests green) |
 
 ## Agent loop
 
-| | Hermes (`AIAgent` in `agent/conversation_loop.py` + `turn_*.py`) | Here (`run_agent()` in `server.py:345`, `chat_loop()` in `agent.py:117`) |
+| | Hermes (`AIAgent` + `turn_*.py`) | Here (`run_agent()` in `server.py`, `chat_loop()` in `agent.py`) |
 |---|---|---|
-| Steps | `chat()` → `run_conversation()`; budget 500 turns, subagent cap 50 | `max_steps=12` (server), 20 (CLI). Subagent cap 6, no recursion |
-| Interrupts | Threaded `_interruptible_api_call` — cancels mid-API-call | Cooperative flag `_is_interrupted()` — stops only between steps, never mid-tool |
-| Tool parallelism | `ThreadPoolExecutor` for multi-calls, order-restored | Sequential `for tc in msg.tool_calls` |
-| API modes | 3: `chat_completions` / `codex_responses` / `anthropic_messages`, auto-resolved | 1: `chat.completions` via `openai.OpenAI` to MaxPlus only |
-| Failure | Retry + fallback-provider chain + credential refresh + aux-task fallback | Retry 1+4 on 429/5xx only (`_chat_create_with_retry`), never 4xx |
-| Steer | New message / `/stop` aborts API thread, re-routes | `/api/steer` queued, `_drain_steer()` only at safe boundary; `/api/interrupt` sets flag |
-| Idempotency | `task_id` + gateway ownership markers + completion backlog | `run + item_id` in-mem `RUNS{}` + SQLite cross-restart (`_store_get`) + 409 if in-flight |
-| Callbacks | 8 surfaces: tool_progress / thinking / reasoning / clarify / step / stream_delta / tool_gen / status | 1 surface: `live_logs` list → SSE `/api/event` + `/api/progress` poll |
+| Steps | `chat()` → `run_conversation()`; budget 500 turns, subagent cap 50 | `max_steps=12` (server), 20 (CLI). Subagent cap 6, no recursion, no `question` inside |
+| Interrupts | Threaded `_interruptible_api_call` — cancels mid-API-call | Cooperative flag — stops only between steps, never mid-tool |
+| Tool parallelism | `ThreadPoolExecutor`, order-restored | Same: `run_tool_calls()` (ThreadPoolExecutor ≤4, order-restored); single call runs inline |
+| API modes | 3: `chat_completions` / `codex_responses` / `anthropic_messages` | 1: `chat.completions` via `openai.OpenAI` to MaxPlus only |
+| Failure | Retry + fallback-provider chain + credential refresh | Retry 1+4 on 429/5xx + `_model_chain` fallback (`FORMY_FALLBACK_MODELS`); never 4xx |
+| Steer | New message / `/stop` aborts API thread | `/api/steer` queued, `_drain_steer()` at safe boundary; `/api/interrupt` sets flag; `queue` mode parks while busy |
+| Idempotency | `task_id` + gateway ownership + backlog | `run + item_id` in-mem `RUNS{}` + SQLite cross-restart + 409 if in-flight |
+| Callbacks | 8 surfaces (tool_progress / thinking / clarify / stream_delta …) | 4 SSE channels: `stream` (tokens) + `think` (reasoning) + `mark` (step/restart) + tool-log `data` → `/api/event`; `/api/progress` kept for compat |
 
 ## Prompt assembly
 
-| | Hermes (`prompt_builder.py`, 3 tiers) | Here (`system_prompt.md`, 12 lines) |
+| | Hermes (`prompt_builder.py`, 3 tiers) | Here (`prompt.py:build_system_prompt()`) |
 |---|---|---|
-| Tiers | `stable` (identity/tools/skills) → `context` (files) → `volatile` (memory/profile/time) | Single static system string, editable in UI |
-| Stability rule | Frozen mid-conversation to preserve prefix cache; `/model` explicitly breaks it | Rebuilt per `/api/chat` from `system + history[-60:]` |
+| Tiers | `stable` → `context` → `volatile`, frozen mid-conversation | Same 3 tiers: `SOUL.md` + `AGENTS.md` → UI `system_prompt.md` → live `MEMORY` + `USER` snapshot |
 | Caching | Anthropic cache breakpoints + `prompt_caching.py` | None |
-| Ephemeral layers | Budget/context-pressure warnings injected per turn | None |
+| Ephemeral layers | Budget/context-pressure warnings per turn | Memory usage % shown so the model self-limits; live re-read every turn (not frozen) |
 
 ## Context / compaction
 
-| | Hermes | Here (`compact_messages()` in `tools.py:751`, `_maybe_compact` per step) |
+| | Hermes | Here (`compact_messages()` in `tools.py`, `_maybe_compact` per step) |
 |---|---|---|
 | Trigger | Preflight >50% window; gateway auto >85% | `>60 msgs` or `>80k chars` (CLI: 100k) |
-| Keep | Last N intact (`protect_last_n=20`), tool pairs never split | Keep newest 20, never split `tool` role tail, never drop lead system msg |
-| Method | Lossy `context_compressor.py` + pluggable `ContextEngine` ABC + micro-compaction; flush memory first | One LLM summary (`SUMMARY_SYSTEM`, <300 words) → `[Auto-compacted summary]` system msg; failure → plain slice |
-| Lineage | Compression forks child session (`parent_session_id`), old rows `active=0` | No fork; in-place `messages[:] = new` |
-| Bound output | Same idea, richer: per-tool redaction + receipts | `_bound_for_model()`: 8k cap, head 4k + tail 4k, full spill to `.jobs/` |
+| Keep | Last N intact, tool pairs never split | Keep newest 20, never split `tool` tail, never drop lead system msg |
+| Method | Lossy compressor + pluggable `ContextEngine` + micro-compaction; flush memory first | One LLM summary (<300 words) → `[Auto-compacted summary]` system msg; failure → plain slice |
+| Lineage | Forks child session, old rows `active=0` | In-place `messages[:] = new`, logged as `compact` tool entry |
+| Bound output | Per-tool redaction + receipts | 8k cap, head 4k + tail 4k, full spill to `.jobs/` |
 
-## Tools
+## Tools (21 vs 70+)
 
-| | Hermes (`tools/registry.py` + `model_tools.py` + `toolsets.py`) | Here (`tools.py`, static `TOOLS_SPECS`) |
+| | Hermes (`tools/registry.py` + `toolsets.py`) | Here (`tools.py`, `TOOLS_SPECS` + `TOOLSETS` + `get_tool_definitions()`) |
 |---|---|---|
-| Count | 70+ across ~28 toolsets, AST auto-discovery, no manual list | 17 hand-listed: bash/edit/write/read/grep/glob/lsp/apply_patch/skill/todowrite/webfetch/websearch/question/subagent/models/mcp_* |
-| Gating | Per-tool `check_fn` (key? binary? service?) + enabled/disabled toolsets + platform presets | Always on except `question` stripped in web mode |
-| Safety | `DANGEROUS_PATTERNS` (rm -rf, mkfs, DROP, curl\|sh…) + interactive approve / gateway callback / allowlist + smart-LLM approve | None — bash runs raw via `subprocess` |
-| Terminal | 7 backends: local/docker/ssh/singularity/modal/daytona/vercel + PTY + process registry + receipts | 1 backend: local `subprocess.run` + `background=true` → `.jobs/job-*.log` |
-| Web | 4 backends + browser CDP supervisor + doc extraction | `webfetch` (regex strip) + `websearch` (Exa → DDG fallback, honest fail) |
-| MCP | Dynamic `mcp_tool_discovery` from server config | 2 stubs returning "no MCP servers configured" |
-| LSP | Real diagnostics wiring | Grep-based fallback string |
-| Dispatch | `handle_function_call` → agent-loop intercept (todo/memory/session_search/delegate) → pre-hook → `registry.dispatch` → post-hook, double error-wrap | `execute_tool()` if/else chain, per-call try/except (one bad call never kills siblings) |
-| Async | `_run_async()` bridges CLI loop / gateway loop / worker threads | All sync |
+| Count | 70+ across ~28 toolsets, AST auto-discovery | 23 hand-listed across 6 toolsets (`files/shell/search/agent/mcp/all`) + `check_fn` availability gate |
+| Files/shell | Full editors, PTY, process registry | `bash/edit/write/read/extract/grep/glob/apply_patch/lsp`(grep-fallback) + `process` (poll/wait/log/kill/stdin for bg jobs) |
+| Agent | `todo/memory/session_search/delegate` intercept | `todowrite/cron/memory/session_search/skill/skill_manage/subagent/question/models` |
+| Web | 4 backends + browser CDP supervisor | `webfetch` (loopback/metadata-blocked, regex strip) + `websearch` (Exa → DDG fallback, honest fail) + `extract` (text pdf/docx via stdlib, OCR refused honestly) |
+| MCP | Dynamic `mcp_tool_discovery` from server config | 2 honest stubs (`mcp_list_resources`, `mcp_read_resource`) |
+| Safety | `DANGEROUS_PATTERNS` + approve cards + allowlist + smart-LLM | `DANGEROUS_PATTERNS` (deny on web, prompt on CLI TTY, `FORMY_APPROVAL=allow` bypass) + sensitive-path guard on `write/edit/apply_patch` (`~/.ssh`, `/etc`, `/System`, keychains; `FORMY_FILE_SCOPE=allow` bypass) |
+| Terminal | 7 backends: local/docker/ssh/singularity/modal/daytona/vercel | 3 backends: local/docker/ssh (`backends.py`, per-call resolution, best-effort workdir `cd`, `shlex` quoting, silent local fallback) |
+| Dispatch | Pre-hook → `registry.dispatch` → post-hook, double error-wrap | `execute_tool()` if/else + `run_tool_calls()` parallel, per-call try/except |
+| Async | `_run_async()` bridges CLI/gateway/worker threads | All sync (server parallelizes at thread-per-request + tool level) |
 
-## Memory / skills (the big gap)
+## Memory / skills (the former big gap — now closed, minus auto-review)
 
-| | Hermes (closed learning loop) | Here (none) |
+| | Hermes (closed learning loop) | Here (curated loop, no auto-review — deliberate) |
 |---|---|---|
-| Stores | `MEMORY.md` 2200 chars + `USER.md` 1375 chars, frozen snapshot in prompt, `§`-delimited | No memory files; only `.todos.json` via `todowrite` |
-| Writes | Agent `memory` tool (add/replace/remove, substring match, dup reject, injection scan); `write_approval` gate + `/memory pending` | N/A |
-| Background review | Post-turn fork learns lessons → memory/skill writes (`auxiliary.background_review`, cheaper-model + digest + defer-on-local-GPU + token cap) | N/A |
-| Recall | `session_search`: FTS5 over all sessions (~20ms), no LLM; Honcho/Hindsight/Mem0 providers optional | N/A — history is last-60 in request body |
-| Skills | Auto-create after complex tasks, self-patch in use, `/skills`, Skills Hub, `agentskills.io` compat, `/journey` timeline | `skill(name/path/id)` just reads a `SKILL.md` file (≤20k chars) |
-| Context files | `SOUL.md` / `AGENTS.md` / project context injected per turn | Only `system_prompt.md` |
+| Stores | `MEMORY.md` + `USER.md`, frozen snapshot, `§`-delimited | Same 2 files (`memories/`, 2200/1375 caps), live snapshot w/ usage % — seeded: 6 env facts (39%), 4 user prefs (20%) |
+| Writes | Agent `memory` tool + `write_approval` gate + `/memory pending` | `memory` tool (add/replace/remove/list, dup reject, injection scan, over-budget → consolidate) |
+| Background review | Post-turn fork learns lessons (cheaper model + digest) | Not built — you ARE the review on a laptop |
+| Recall | `session_search`: FTS5 (~20ms) + Honcho/Mem0 optional | `session_search`: FTS5 → LIKE → jsonl fallback, read-only, never raises |
+| Skills | Auto-create after complex tasks, self-patch, Skills Hub, `agentskills.io` compat | `skill()` reads + `skill_manage()` writes (traversal-guarded, 24k cap, patch-preferred); no auto-create, no hub |
+| Context files | `SOUL.md` / `AGENTS.md` / project context per turn | Same: `SOUL.md` (who) + `AGENTS.md` (how) + UI text + memory |
 
 ## Session storage
 
 | | Hermes (`hermes_state*.py`, `state.db` v31) | Here (`.sessions/`) |
 |---|---|---|
-| Engine | SQLite WAL, `sessions` + `messages` + `session_model_usage` + `state_meta` + gateway/delivery/compression-lock tables | SQLite `runs(run_id,reply,tools,done,status,ts)` + per-session `.jsonl` turns |
-| Search | 3× FTS5 (`messages_fts` + trigram + CJK) with triggers, sanitizer, snippet `>>>match<<<`, lineage queries | No search |
-| Meta | Tokens/cost per model/task, titles (unique), source (`cli`/`telegram`/…), `user_id`, cwd/branch, rewind/archived/pinned, `message_uid` + tool-call uids | `message_count` only via jsonl length; no tokens/cost |
-| Contention | 1s SQLite timeout + 20s/60s/0.5s budgeted retry + `BEGIN IMMEDIATE` + WAL checkpoint/50 + lock-owner logging | `DB_LOCK` threading lock (single process only) |
-| Recovery | Migration chain v1→v31, `_reconcile_columns`, stale-running → interrupted, `hermes sessions recover` | `_store_init()`: stale `running` → `interrupted`, prune >24h |
-| Isolation | Per-profile `HERMES_HOME` (own db/config/memories), test live-guard | Single dir; git-ignored `.sessions/.jobs/.todos.json` |
+| Engine | SQLite WAL: sessions + messages + usage + gateway/delivery/lock tables | SQLite WAL `store.db`: `runs` + `messages` + `messages_fts` (FTS5 w/ triggers, LIKE fallback) + per-session `.jsonl` turns |
+| Search | 3× FTS5 + trigram + CJK, sanitizer, snippets, lineage | 1× FTS5 + snippet `>>>match<<<`, role filter, jsonl fallback |
+| Meta | Tokens/cost, titles, source, user_id, cwd/branch, rewind/pin/archive, uids | Tool-name list per turn, `message_count` via jsonl; no tokens/cost, no pin/archive |
+| Contention | 1s timeout + budgeted retry + `BEGIN IMMEDIATE` + checkpoint | `DB_LOCK` threading lock, 10s timeout (single process only) |
+| Recovery | Migration chain v1→v31, stale-running → interrupted | `_store_init()`: stale `running` → `interrupted`, prune >24h; write-ahead claims per run |
 
 ## Serving / platforms
 
 | | Hermes | Here |
 |---|---|---|
-| Entries | CLI + gateway + ACP (VS Code/Zed/JetBrains) + batch runner + API server + Python lib | `server.py` (`ThreadingHTTPServer` 127.0.0.1:8000) + `agent.py` CLI |
-| Chat surfaces | TUI (multiline, autocomplete, streaming, reasoning view) + Telegram/Discord/Slack/WhatsApp/Signal/Email + web dashboard + cron delivery | Single-file `index.html`, EventSource live tool log, Esc = interrupt |
-| Cron | First-class agent jobs (`cron/jobs.py`), natural-language schedule, skill/script attach, any-platform delivery | None (suggested: auto-continue while todos open) |
-| Plugins | `~/.hermes` / project / pip entry-points; tools + hooks + CLI cmds; memory + context-engine single-select | None |
-| Training | Trajectory gen (ShareGPT) + compression for next-gen tool models | None |
+| Entries | CLI + gateway + ACP + batch runner + API server + Python lib | `server.py` (`ThreadingHTTPServer` 127.0.0.1:8000, POST cap 10MB) + `agent.py` CLI (TTY `question`) |
+| Chat surfaces | TUI + Telegram/Discord/Slack/WhatsApp/Signal/Email + dashboard + cron delivery | Single-file `index.html` (token streaming, thinking cards, steer-while-running, Esc incl. mid-generation, ● LIVE pill, export w/ tool logs) |
+| Cron | First-class jobs, NL schedule, skill/script attach, any-platform delivery | `cron.py` + 30s tick daemon + overlap guard; `every <N>s\|m\|h` + `daily@HH:MM`; transcripts in `.cron/runs/`, sessions as `cron-<id>`; runs only while server is up |
+| Plugins | `~/.hermes` / project / pip entry-points; memory + context-engine single-select | None (decided against) |
+| Training | Trajectory gen (ShareGPT) + compression | None (decided against) |
 
-## What to borrow (cheapest first)
+## What was borrowed (all done)
 
-1. `DANGEROUS_PATTERNS` + approve before `bash` — biggest safety win, ~30 lines.
-2. `check_fn` gating (hide `websearch` without key instead of honest-fail text).
-3. `MEMORY.md`/`USER.md` + `memory` tool — Hermes' cheapest superpower.
-4. `session_search` FTS5 over `.sessions/*.jsonl` — recall without rereading everything.
-5. Fallback model list (not just retry-same-model).
-6. Cron = your "auto-continue while todos open" idea, generalized.
+1. ✅ `DANGEROUS_PATTERNS` + approve before `bash` (~30 lines → `approval.py`).
+2. ✅ `check_fn` gating + `TOOLSETS` + `get_tool_definitions()` (`tools.py`).
+3. ✅ `MEMORY.md`/`USER.md` + `memory` tool (seeded, injected every turn).
+4. ✅ `session_search` FTS5 over SQLite (+ jsonl fallback).
+5. ✅ Fallback model list (`FORMY_FALLBACK_MODELS`, tried in order).
+6. ✅ Cron generalized from "auto-continue while todos open".
+7. ✅ Parallel tools (`run_tool_calls`, order-restored).
+8. ✅ Backends interface (`local/docker/ssh`, silent fallback).
+9. ✅ Frontier hardening (2026-10): webfetch loopback block, sensitive-path file guard, POST 10MB cap, cron overlap guard, XSS fix in session search, per-call backend resolution.
+10. ✅ Job control + docs (2026-10): `process` tool (poll/wait/log/kill/stdin over `bash background` jobs, 64-receipt retention) + `extract` (text-pdf/docx via stdlib, scanned PDFs refused honestly).
+
+## Deliberately not copied
+
+Gateway (Telegram/Discord/…), ACP, batch runner, plugins, training trajectories,
+cloud backends (modal/daytona/vercel/singularity), Honcho/Mem0 providers,
+background auto-review, prompt caching, billing/tokens, auth (localhost-only),
+voice/mermaid/Tasks-panel UI. Revisit only on real pain.
 
 ---
 
-# Can you copy Hermes patterns to your own laptop agent? Yes.
+# Hermes-webui vs formyproject frontend
 
-Short answer: **yes, and laptop is the easiest target.** Hermes already runs on laptop by default (`local` backend). The 7 backends are interfaces — you only need 1 to start. License is MIT, copying patterns is allowed (keep attribution).
+Source: `https://github.com/nesquena/hermes-webui` (MIT). Skins ported from it.
 
-## What "runs anywhere" really means
-
-| Backend | Needs | On your laptop? |
+| | hermes-webui | Here (`index.html`, 562 lines, zero deps) |
 |---|---|---|
-| `local` | just your Mac | yes, day 1 |
-| `docker` | Docker Desktop | yes, `docker ps` works |
-| `ssh` | any remote box / $5 VPS | yes, later |
-| `singularity` | HPC clusters | skip |
-| `modal` / `daytona` / `vercel` | cloud accounts, hibernate-when-idle | skip — stub the interface, add when needed |
+| Layout | 3-panel: sessions + chat + workspace browser | 3-panel: sessions + chat + system-prompt inspector (no file browser) |
+| Composer | Model/profile/workspace pickers + context ring | Model picker (grouped, keyboard nav) + skin picker; no ring/profiles |
+| Sessions | Pin/archive/projects/tags/share/CLI-bridge | Group by day, search (XSS-fixed), rename, delete, export w/ tool logs (cap 200, localStorage) |
+| Chat | Token streaming, thinking cards, mermaid, voice, approval cards, slash commands | Token streaming (rAF-throttled live bubbles per turn), thinking cards (live + persisted), collapsible tool cards, steer-while-running, Esc, ● LIVE pill, `/`-ready placeholder text only |
+| Settings | Control Center, password/OIDC/passkeys, providers UI | System-prompt textarea only; config lives in `.env` + `FORMY_*` |
+| Themes | Theme × 11-skin matrix, server-persisted | 7 skins (`default/ares/mono/slate/poseidon/sisyphus/charizard`, `formy.skin` localStorage) + OS light/dark |
+| Markdown | Full renderer + Prism.js | Dependency-free renderer (tables, task lists, fences + keyword/number highlight, copy button) |
 
-Daytona/Modal "hibernate" = serverless persistence. You don't need it on a laptop — your disk IS persistence.
+---
 
-## Copy this, skip that (laptop build)
+# Can you copy Hermes patterns to your own laptop agent? Yes — done.
 
-| Hermes pattern | Do on laptop | Skip for now |
+Hermes runs on laptop by default (`local` backend); the 7 backends are interfaces.
+License is MIT (attribution kept in code comments). What "runs anywhere" means here:
+
+| Backend | Needs | Here? |
 |---|---|---|
-| `AIAgent` loop: prompt → call → tools → repeat, 500 budget | yes — raise yours 12 → 100, add thread-interrupt later | fallback-provider chain, 3 API modes (keep 1: `chat_completions`) |
-| `tools/registry.py`: self-register + `check_fn` + toolsets | yes — biggest structural win, ~100 lines | 70 tools; start with your 17 |
-| `DANGEROUS_PATTERNS` approval | yes — ~30 lines, highest ROI | smart-LLM auto-approve |
-| Prompt tiers (stable/context/volatile) + frozen snapshot | yes — split `system_prompt.md` into 3 parts | Anthropic cache breakpoints |
-| Compaction at 50% + protect-last-20 + lineage | yes — yours already does this; add % trigger | micro-compaction, context-engine plugins |
-| `state.db` sessions+messages+FTS5 | yes — 1 table + 1 FTS table is enough | trigram/CJK, billing, 31 migrations |
-| `MEMORY.md` + `USER.md` + `session_search` | yes — the whole learning loop in 2 files + 1 tool | Honcho/Mem0 providers, background review, `/journey` |
-| Gateway (Telegram/Discord/…) + cron + ACP | no — laptop CLI + `:8000` UI is enough | add Telegram later via 1 adapter if wanted |
+| `local` | just your Mac | ✅ default, zero deps |
+| `docker` | Docker Desktop | ✅ `FORMY_DOCKER_CONTAINER`, best-effort workdir |
+| `ssh` | any remote box / $5 VPS | ✅ `FORMY_SSH_TARGET`, `BatchMode`, best-effort workdir |
+| `singularity` | HPC clusters | ❌ skipped |
+| `modal` / `daytona` / `vercel` | cloud accounts, hibernate-when-idle | ❌ skipped — disk IS persistence on a laptop |
 
-## How — 6 steps in order
+## File map (where each Hermes idea lives now)
 
-1. **Registry** (~1 evening): `TOOLS_SPECS` list → `register(name, toolset, schema, handler, check_fn)`. Auto-import `tools/*.py`. Nothing else changes, but adding tool #18 becomes 1 file.
-2. **Environments interface** (~1 evening): `run(cmd, cwd)` → `local_run()` today; `docker_run()` / `ssh_run()` same signature tomorrow. Your `bash` tool calls the interface, not `subprocess` directly.
-3. **Approval** (~1 hour): copy `DANGEROUS_PATTERNS` regexes, check before `bash`, ask on CLI / block on web. Done.
-4. **Prompt builder** (~1 evening): `system_prompt.md` → `SOUL.md` (who) + `AGENTS.md` (how) + `MEMORY.md`/`USER.md` (remembered). Assemble in that order. Freeze per session.
-5. **Storage upgrade** (~1 evening): `.sessions/*.jsonl` → SQLite `messages(session_id, role, content, tool_calls, ts)` + `messages_fts`. Gives you `session_search` free.
-6. **Memory loop** (~1 evening): `memory` tool (add/replace/remove) + inject into prompt + `/new` at task boundaries. Skip background review — you ARE the review on a laptop.
-
-Total: ~1 week of evenings. You already have steps 0 (loop, retry, steer, SSE, SQLite claims) done.
-
-## File map (where each Hermes idea lands in yours)
-
-| Hermes file | Your file | Change |
+| Hermes file | Your file | Status |
 |---|---|---|
-| `agent/conversation_loop.py` | `server.py:run_agent()` | raise budget, add parallel tools later |
-| `tools/registry.py` | `tools.py:execute_tool()` | replace if/else with dict + `register()` |
-| `tools/approval.py` | `tools.py:bash()` | check-then-run wrapper |
-| `agent/prompt_builder.py` | `system_prompt.md` | split into 3 files, concat at chat start |
-| `hermes_state.py` | `.sessions/store.db` | add `messages` + FTS table next to `runs` |
-| `agent/memory_manager.py` | new `memories/` dir | 2 markdown files + 1 tool |
-| `tools/environments/` | `tools.py:bash()` | wrap in `backends/local.py` interface |
+| `agent/conversation_loop.py` | `server.py:run_agent()` + `agent.py:chat_loop()` | Done (12/20-step budgets, parallel tools) |
+| `tools/registry.py` | `tools.py:get_tool_definitions()` + `TOOLSETS` | Done |
+| `tools/approval.py` | `approval.py` + `_sensitive_path()` in `tools.py` | Done + extended to file writes |
+| `agent/prompt_builder.py` | `prompt.py:build_system_prompt()` | Done (3 tiers, live snapshot) |
+| `hermes_state.py` | `.sessions/store.db` (`runs` + `messages` + FTS) | Done |
+| `agent/memory_manager.py` | `memories/` + `memory` tool | Done (minus auto-review) |
+| `tools/environments/` | `backends.py:run()` | Done (3 of 7) |
+| `cron/jobs.py` | `cron.py` + `_cron_tick()` in `server.py` | Done + overlap guard |
+| webui skins/themes | `index.html` `<style>` + `#skinPick` | Done (7 of 11) |
 
-## Laptop limits (honest)
+## Laptop limits (honest, unchanged)
 
 - No GPU-cluster training, no 24/7 Telegram bot unless laptop stays awake — fine for coding agent.
-- Big contexts (200k+) are slower on laptop RAM — your 60-msg / 80k-char compaction is actually well-tuned for this.
+- Big contexts (200k+) are slower on laptop RAM — 60-msg / 80k-char compaction is well-tuned for this.
 - Docker backend needs Docker Desktop running (~2GB RAM). Local backend needs nothing.
+- `openai>=1.0.0` unpinned; Python 3.9 stdlib + `openai` only. No `node` on this machine — JS checked by bracket-balance vs git HEAD.
 
-That's it. Start with registry + approval.
+## Run
+
+```
+python3 -m pip install -r requirements.txt
+NO_BROWSER=1 PORT=8000 python3 server.py   # open http://localhost:8000
+```
+
+## Remaining gaps (only on real pain)
+
+Background auto-review, real MCP config, auth (only if ever bound beyond localhost),
+`/skin` + `/theme` slash commands, approval allow-once cards,
+context-usage ring. Decided against: `bootstrap.py`, gateway/Telegram, plugins, ACP,
+cloud backends, training, voice, workspace browser, Tasks panel.

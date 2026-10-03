@@ -11,7 +11,7 @@
  --border:#2a2e38;--border-strong:#333a48;
  --hover:#2b3342;--accent:#2b6cb0;--accent-text:#7fd07f;
  --error:#e06c75;--diff-add:#1d3a24;--diff-del:#3d2226;
-  --link:#9dbefe;--code-bg:rgba(230,230,230,.08);--kw:#c792ea;
+  --link:#9dbefe;--code-bg:rgba(230,230,230,.08);--kw:#c792ea;--think:#e3b341;
  --sans:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
  color-scheme:dark;
@@ -23,7 +23,7 @@
   --border:#dfe3ea;--border-strong:#c9d0dc;
   --hover:#e3e8f0;--accent:#2b6cb0;--accent-text:#1c7a3d;
   --error:#b3261e;--diff-add:#dff3e4;--diff-del:#fbe3e5;
-  --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;
+   --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;--think:#8a6d1b;
   color-scheme:light;
  }
 }
@@ -42,7 +42,8 @@
 @media (prefers-color-scheme:dark){:root[data-skin="charizard"]{--accent:#FB923C;--accent-hover:#F97316;--accent-bg:rgba(251,146,60,0.08);--accent-bg-strong:rgba(251,146,60,0.15);--accent-text:#FB923C;}}
 .sess.active{background:var(--accent-bg,var(--layer-2));border-color:var(--accent-text,var(--border-strong));}
 *{box-sizing:border-box}
-body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:var(--bg);color:var(--text)}
+html,body{height:100%}
+body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:var(--bg);color:var(--text);overflow:hidden;display:flex;flex-direction:column}
 /* v2 type scale: chrome 13px, messages 14px/160%, h1 17 h2 15 h3 13 */
 .msg{font-size:14px;line-height:1.6;overflow-wrap:break-word}
 .msg h1{font-size:17px;font-weight:600;margin:18px 0 10px}
@@ -60,11 +61,11 @@ body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:
 .msg hr{border:none;border-top:1px solid var(--border);margin:20px 0}
 .seclabel{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 /* Titlebar (desktop shell pattern) */
-header[data-slot="titlebar"]{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--layer);border-bottom:1px solid var(--border)}
+header[data-slot="titlebar"]{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--layer);border-bottom:1px solid var(--border);flex:0 0 auto;flex-wrap:wrap}
 header b{white-space:nowrap}
 select,textarea,input,button{background:var(--layer-2);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:8px}
 button{cursor:pointer}button:hover{background:var(--hover)}
-#layout{display:flex;height:calc(100vh - 57px)}
+#layout{display:flex;flex:1;min-height:0;height:auto}
 /* Sessions sidebar (desktop tabs pattern, persisted to localStorage) */
 aside[data-slot="sessions-sidebar"]{width:220px;min-width:220px;background:var(--bg-deep);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px;gap:6px;overflow:auto}
 aside[data-slot="sessions-sidebar"] h4{margin:4px 2px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -85,31 +86,60 @@ aside[data-slot="sessions-sidebar"] h4{margin:4px 2px;color:var(--muted);font-si
 .tippill button{border:none;background:none;color:var(--faint);padding:0 4px}
 .tippill button:hover{color:var(--text)}
 /* Chat panel */
-main[data-slot="session-chat-panel"]{flex:2;display:flex;flex-direction:column;padding:12px;gap:10px;min-width:0}
+main[data-slot="session-chat-panel"]{flex:2;display:flex;flex-direction:column;padding:12px;gap:10px;min-width:0;min-height:0;position:relative;overflow:hidden}
 /* Inspector */
 aside[data-slot="inspector"]{flex:1;border-left:1px solid var(--border);padding:12px;overflow:auto;max-width:380px;min-width:260px;background:var(--bg)}
 #modelWrap{position:relative}
-#modelFilter{width:230px}
-#modelList{position:absolute;top:38px;left:0;width:300px;max-height:320px;overflow:auto;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:8px;display:none;z-index:10}
+#modelFilter{width:230px;max-width:38vw;min-width:0}
+#modelList{position:absolute;top:38px;left:0;width:300px;max-width:86vw;max-height:320px;overflow:auto;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:8px;display:none;z-index:10}
 .mgroup{padding:6px 8px 2px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .mopt{padding:8px;cursor:pointer;font-size:13px;display:flex;gap:6px;align-items:center}
 .mopt:hover,.mopt.active{background:var(--hover)}
 .mopt.sel{color:var(--accent-text)}
 .mopt .tick{margin-left:auto;color:var(--accent-text)}
-#msgs{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px}
+#msgs{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:8px;overscroll-behavior-y:contain;overflow-anchor:auto}
+@media (hover:hover) and (pointer:fine){#msgs{overflow-anchor:none}}
+#msgs>*{flex-shrink:0;min-width:0}
 .msg{padding:10px;border-radius:10px;max-width:88%;white-space:pre-wrap}
 .user{background:var(--accent);color:#fff;align-self:flex-end}
 .assistant{background:var(--layer-2);align-self:flex-start}
-.tool{font-size:12px;background:var(--bg-deep);border:1px solid var(--border);border-radius:8px;margin-top:6px;overflow:hidden}
+.tool{font-size:12px;background:var(--bg-deep);border:1px solid var(--border);border-radius:8px;margin-top:6px;overflow:hidden;width:100%;max-width:100%}
 .tool-head{padding:6px 8px;cursor:pointer;display:flex;gap:6px;align-items:center;user-select:none}
 .tool-head:hover{background:var(--hover)}
 .tool-head .caret{color:var(--faint);font-size:10px;width:12px}
 .tool-head .fname{font-family:var(--mono);font-weight:600}
 .tool-head .fsub{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.tool-body{display:none;padding:6px 8px;border-top:1px solid var(--border);font-family:var(--mono);white-space:pre-wrap;word-break:break-word}
+.tool-body{display:none;padding:6px 8px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
 .tool.open .tool-body{display:block}
-.tool.err{border-color:var(--error)}
-#msgs>.tool{max-width:88%;align-self:flex-start}
+.tool-body pre{max-height:240px;overflow:auto;white-space:pre-wrap;margin:0}
+ .tool.err{border-color:var(--error)}
+ /* thinking cards (hermes-webui pattern: collapsible gold theme, reused for live + saved) */
+ .tool.think{border-color:var(--think);}
+ .tool.think .fname{color:var(--think);}
+ /* LIVE pill (titlebar): what the model is doing right now — click to jump to it */
+ #livePill{display:none;font-size:12px;border-color:var(--think);color:var(--think);animation:pulse-dot 1.5s ease-in-out infinite;white-space:nowrap}
+ .msg.flash{animation:msg-flash .9s ease-out;}
+ @keyframes msg-flash{0%{box-shadow:0 0 0 2px var(--accent-text);}100%{box-shadow:none;}}
+#msgs>.tool{width:100%;max-width:100%;align-self:stretch}
+#msgs>.msg{flex-shrink:0}
+/* tool-call group: one collapsible per turn (hermes-webui Activity pattern) */
+.tool-group{width:100%;max-width:100%;align-self:stretch;border-left:2px solid var(--border-strong);border-radius:0 8px 8px 0;margin-top:6px}
+.tool-group-head{display:flex;gap:6px;align-items:center;padding:6px 8px;cursor:pointer;user-select:none;font-size:12px;color:var(--muted);background:var(--bg-deep);border:1px solid var(--border);border-radius:8px}
+.tool-group-head:hover{background:var(--hover)}
+.tool-group-head .caret{color:var(--faint);font-size:10px;width:12px}
+.tool-group-head .cnt{margin-left:auto;font-size:11px;color:var(--faint)}
+.tool-group-body{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.tool-group.collapsed .tool-group-body{display:none}
+.tool-group .tool{margin-top:0}
+/* scroll-to-bottom: overlay, no layout impact (hermes-webui pattern) */
+#jumpBtn{position:absolute;right:20px;bottom:88px;width:32px;height:32px;border-radius:50%;z-index:10;display:none;align-items:center;justify-content:center;background:var(--layer-2);border:1px solid var(--border-strong);font-size:14px}
+#jumpBtn.show{display:flex}
+#jumpBtn.newmsg{width:auto;border-radius:999px;padding:0 12px;font-size:12px}
+@media (max-width:900px){
+ aside[data-slot="sessions-sidebar"]{width:170px;min-width:170px}
+ aside[data-slot="inspector"]{display:none}
+ .msg{max-width:96%}
+}
 #row{display:flex;gap:8px;align-items:flex-end}#row textarea{flex:1;resize:none;max-height:120px;overflow:auto;font-family:var(--sans);font-size:13px;line-height:20px}
 #row textarea::placeholder{color:var(--faint)}
 #sys{width:100%;height:90px;font-family:var(--mono);font-size:12px}
@@ -139,6 +169,8 @@ h4{margin:12px 0 6px}
 .msg :not(pre)>code{font-family:var(--mono);font-size:12.5px;background:var(--code-bg);padding:0 4px;border-radius:4px}
 .copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
 .msg pre:hover .copybtn{opacity:1}
+@media (hover:none){.copybtn{opacity:1}}
+.tool-head:focus-visible,.tool-group-head:focus-visible{outline:2px solid var(--accent-text);outline-offset:-2px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head>
 <body>
@@ -158,7 +190,8 @@ h4{margin:12px 0 6px}
 <option value="sisyphus">skin: sisyphus</option>
 <option value="charizard">skin: charizard</option>
 </select>
-<span id="status" style="font-size:12px;color:var(--muted)"></span>
+ <span id="status" style="font-size:12px;color:var(--muted)"></span>
+ <button id="livePill" title="What the model is thinking now — click to jump to it">● LIVE</button>
 <span style="flex:1"></span>
 <button id="newBtn" title="New session">+ New</button>
 </header>
@@ -170,7 +203,8 @@ h4{margin:12px 0 6px}
 </aside>
 <main data-slot="session-chat-panel">
 <div id="msgs" data-slot="timeline"></div>
-<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button onclick="send()">Send</button></div>
+<button id="jumpBtn" title="Scroll to latest">↓</button>
+<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="sendBtn" onclick="send()">Send</button></div>
 </main>
 <aside data-slot="inspector">
 <h4>System prompt (your own)</h4>
@@ -202,7 +236,17 @@ function loadStore(){
  if(!activeId||!sessions[activeId]){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:'',updated:Date.now()};}
 }
 function saveStore(){
- try{localStorage.setItem(LS_SESS,JSON.stringify(sessions));localStorage.setItem(LS_ACTIVE,activeId);}catch(e){}
+ try{localStorage.setItem(LS_SESS,JSON.stringify(sessions));localStorage.setItem(LS_ACTIVE,activeId);return;}catch(e){}
+ // quota hit: sessions carry up to 200 tool logs each — trim oldest first, retry
+ try{
+  Object.keys(sessions).forEach(id=>{let s=sessions[id];if(s.history)s.history=s.history.slice(-20);if(s.tools)s.tools=s.tools.slice(-20);});
+  localStorage.setItem(LS_SESS,JSON.stringify(sessions));localStorage.setItem(LS_ACTIVE,activeId);return;
+ }catch(e2){}
+ // last resort: keep only the active session so the current work still persists
+ try{
+  let keep={};if(sessions[activeId])keep[activeId]=sessions[activeId];
+  localStorage.setItem(LS_SESS,JSON.stringify(keep));localStorage.setItem(LS_ACTIVE,activeId);
+ }catch(e3){}
 }
 function cur(){return sessions[activeId];}
 // v2 coarse relative time: Just now / Nm ago / Nh ago / Nd ago
@@ -239,7 +283,7 @@ function renderSessions(){
  let q=((document.getElementById('sessSearch')||{}).value||'').toLowerCase();
  let ids=Object.keys(sessions).sort((a,b)=>(sessions[b].updated||0)-(sessions[a].updated||0));
  if(q)ids=ids.filter(id=>(sessions[id].title||'').toLowerCase().includes(q));
- if(!ids.length){box.innerHTML='<div class="sess-empty">'+(q?'No sessions found for "'+q+'"':'Nothing here yet')+'</div>';return;}
+  if(!ids.length){let e2=document.createElement('div');e2.className='sess-empty';e2.textContent=q?'No sessions found for "'+q+'"':'Nothing here yet';box.appendChild(e2);return;}
  let groups={};
  ids.forEach(id=>{(groups[dayGroup(sessions[id].updated)]=groups[dayGroup(sessions[id].updated)]||[]).push(id);});
  ['Today','Yesterday','Older'].forEach(g=>{
@@ -261,6 +305,7 @@ function renderSessions(){
 }
 function rerenderMsgs(){
  let box=document.getElementById('msgs');box.innerHTML='';
+ window._toolGroup=null;_pinned=true;syncJump();
  let h=cur().history||[];
  if(!h.length){
   let e=document.createElement('div');e.className='empty-state';
@@ -269,7 +314,9 @@ function rerenderMsgs(){
   e.appendChild(b);box.appendChild(e);
  }
  h.forEach(m=>addMsg(m.role==='user'?'user':'assistant',m.content,true));
- (cur().tools||[]).forEach(x=>{try{renderTool(x,true);}catch(e){}});
+ let past=cur().tools||[];
+ if(past.length){window._toolGroup=null;ensureToolGroup('Earlier activity');past.forEach(x=>{try{renderTool(x,true);}catch(e){}});closeToolGroup();}
+ box.scrollTop=box.scrollHeight;
  maybeTip();
 }
 function maybeTip(){
@@ -283,6 +330,7 @@ function maybeTip(){
 }
 function newSession(){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:selectedModel,updated:Date.now()};saveStore();renderSessions();rerenderMsgs();}
 document.getElementById('newBtn').onclick=newSession;
+document.getElementById('livePill').onclick=jumpLive;
 document.getElementById('sessSearch').addEventListener('input',renderSessions);
 
 // ---------- model picker (grouped by provider, keyboard nav) ----------
@@ -315,8 +363,8 @@ document.addEventListener('click',e=>{if(!document.getElementById('modelWrap').c
 
 // ---------- tool renderer (one collapsible, family switch) ----------
 function familyOf(t){
- if(['read','edit','write','apply_patch'].includes(t))return{icon:'📄',label:'file'};
- if(['bash'].includes(t))return{icon:'⌨',label:'shell'};
+ if(['read','edit','write','apply_patch','extract'].includes(t))return{icon:'📄',label:'file'};
+ if(['bash','process'].includes(t))return{icon:'⌨',label:'shell'};
  if(['grep','glob','lsp'].includes(t))return{icon:'🔍',label:'search'};
  if(['webfetch','websearch'].includes(t))return{icon:'🌐',label:'web'};
   if(['subagent','models','question','skill','skill_manage','todowrite','cron','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
@@ -324,8 +372,10 @@ function familyOf(t){
 }
 function subOf(tool,args){
  try{
-  if(tool==='bash')return String(args.command||'').slice(0,120);
-  if(tool==='read'||tool==='edit'||tool==='write')return String(args.filePath||args.path||'').slice(0,120);
+   if(tool==='bash')return String(args.command||'').slice(0,120);
+   if(tool==='process')return String(args.action||'list')+' '+String(args.session_id||'').slice(0,60);
+   if(tool==='read'||tool==='edit'||tool==='write')return String(args.filePath||args.path||'').slice(0,120);
+   if(tool==='extract')return String(args.filePath||'').slice(0,120);
   if(tool==='apply_patch')return 'patch ' + String(args.patchText||'').slice(0,60).replace(/\n/g,' ');
   if(tool==='grep')return String(args.pattern||'').slice(0,100);
   if(tool==='glob')return String(args.pattern||'').slice(0,100);
@@ -340,34 +390,108 @@ function subOf(tool,args){
  }catch(e){return '';}
 }
 function renderTool(x,quiet){
-  let f=familyOf(x.tool);
- let d=document.createElement('div');d.className='tool';
- let res=String(x.result||'');
- if(/^.*(error|failed|not found)/i.test(res.slice(0,200)))d.classList.add('err');
+   if(x.tool==='thinking'){
+    // reasoning card: live think card (if any) is replaced by this persistent one
+    if(window._liveThinkCard&&window._liveThinkCard.parentElement)window._liveThinkCard.remove();
+    window._liveThinkCard=null;
+    let d=document.createElement('div');d.className='tool think';
+    let head=document.createElement('div');head.className='tool-head';
+    let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
+    let icon=document.createElement('span');icon.textContent='💭';
+    let fn=document.createElement('span');fn.className='fname';fn.textContent='thinking';
+    let fs=document.createElement('span');fs.className='fsub';fs.textContent='reasoning — click to expand';
+    head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
+    let body=document.createElement('div');body.className='tool-body';
+    body.textContent=String(x.result||'');
+    head.onclick=()=>{let open=d.classList.toggle('open');caret.textContent=open?'▼':'▶';};
+    d.appendChild(head);d.appendChild(body);
+    let t=document.getElementById('msgs');
+    t.appendChild(d);if(!quiet)scrollIfPinned();
+    return;
+   }
+   let f=familyOf(x.tool);
+  let d=document.createElement('div');d.className='tool';
+  let res=String(x.result||'');
+  if(/\b(error|failed|failure|not found|traceback|exception)\b/i.test(res.slice(0,300))&&!/\b(0 errors?|no errors?|error-free|exit 0)\b/i.test(res.slice(0,300)))d.classList.add('err');
  let head=document.createElement('div');head.className='tool-head';
  let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
  let icon=document.createElement('span');icon.textContent=f.icon;
  let fn=document.createElement('span');fn.className='fname';fn.textContent=x.tool;
  let fs=document.createElement('span');fs.className='fsub';fs.textContent=subOf(x.tool,x.args||{});
- head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);
+ head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
  let body=document.createElement('div');body.className='tool-body';
  body.textContent='args: '+JSON.stringify(x.args)+'\n\n'+res.slice(0,2000);
  head.onclick=()=>{d.classList.toggle('open');caret.textContent=d.classList.contains('open')?'▼':'▶';};
  if(d.classList.contains('err')){d.classList.add('open');caret.textContent='▼';}
- d.appendChild(head);d.appendChild(body);
-  // desktop-style: tools render inline in the chat timeline, in order
-  let t=document.getElementById('msgs');
-  t.appendChild(d);if(!quiet)d.scrollIntoView();
- let olds=t.querySelectorAll(':scope > .tool');
- if(olds.length>100)olds[0].remove();
+  d.appendChild(head);d.appendChild(body);
+   // desktop-style: tools render grouped per turn inside the chat timeline
+   let t=document.getElementById('msgs');
+   ensureToolGroup('Activity').querySelector('.tool-group-body').appendChild(d);
+   noteToolGrouped();if(!quiet)scrollIfPinned();
+  let olds=t.querySelectorAll('.tool-group-body > .tool');
+  if(olds.length>200){let first=olds[0];let g=first.closest('.tool-group');first.remove();if(g&&!g.querySelector('.tool'))g.remove();noteToolGrouped();}
 }
+
+// ---------- pinned scroll-follow (hermes-webui pattern: only follow when
+// the user is already at the bottom; otherwise show a jump button) ----------
+let _pinned=true;
+function msgsEl(){return document.getElementById('msgs');}
+function bottomDist(){let el=msgsEl();return el?el.scrollHeight-el.scrollTop-el.clientHeight:0;}
+function scrollToBottom(){let el=msgsEl();if(!el)return;_pinned=true;el.scrollTop=el.scrollHeight;requestAnimationFrame(()=>{if(_pinned)el.scrollTop=el.scrollHeight;});syncJump();}
+function scrollIfPinned(){if(_pinned)scrollToBottom();else syncJump(true);}
+// mutate DOM without shifting content under a user who scrolled up to read:
+// preserve distance-from-bottom across inserts/re-renders above the viewport
+function stableMutate(fn){let el=msgsEl();if(!el||_pinned){fn();return;}let dist=el.scrollHeight-el.scrollTop;fn();el.scrollTop=Math.max(0,el.scrollHeight-dist);}
+function syncJump(newmsg){
+ let b=document.getElementById('jumpBtn');if(!b)return;
+ let row=document.getElementById('row');
+ if(row)b.style.bottom=(row.offsetHeight+16)+'px';
+ if(_pinned){b.className='';b.style.display='none';return;}
+ b.className='show'+(newmsg?' newmsg':'');b.style.display='flex';
+ b.textContent=newmsg?'↓ new messages':'↓';
+}
+function ensureToolGroup(label){
+ let box=msgsEl(),g=window._toolGroup;
+ if(!g||!document.contains(g)||g.dataset.done){
+  g=document.createElement('div');g.className='tool-group';
+  let head=document.createElement('div');head.className='tool-group-head';
+  let caret=document.createElement('span');caret.className='caret';caret.textContent='▼';
+  let lab=document.createElement('span');lab.className='glabel';lab.textContent=label||'Activity';
+  let cnt=document.createElement('span');cnt.className='cnt';cnt.textContent='';
+  head.appendChild(caret);head.appendChild(lab);head.appendChild(cnt);headAttrs(head);
+  head.onclick=()=>{let c=g.classList.toggle('collapsed');caret.textContent=c?'▶':'▼';};
+  let body=document.createElement('div');body.className='tool-group-body';
+  g.appendChild(head);g.appendChild(body);box.appendChild(g);
+  window._toolGroup=g;
+ }
+ return g;
+}
+function noteToolGrouped(){
+ let g=window._toolGroup;if(!g||!document.contains(g))return;
+ let n=g.querySelectorAll('.tool-group-body > .tool').length;
+ let cnt=g.querySelector('.cnt');if(cnt)cnt.textContent=n?n+' tool'+(n>1?'s':'')+' — click to collapse':'';
+}
+function closeToolGroup(){if(window._toolGroup)window._toolGroup.dataset.done='1';window._toolGroup=null;}
+(function(){
+ let el=document.getElementById('msgs'),b=document.getElementById('jumpBtn');
+ if(el)el.addEventListener('scroll',()=>{
+  _pinned=bottomDist()<=80;
+  syncJump();
+ },{passive:true});
+ if(b)b.onclick=scrollToBottom;
+ // keyboard: Enter/Space toggles collapsible tool + group headers
+ document.addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ')&&e.target&&e.target.classList&&(e.target.classList.contains('tool-head')||e.target.classList.contains('tool-group-head'))){e.preventDefault();e.target.click();}
+ });
+})();
+function headAttrs(head){head.setAttribute('tabindex','0');head.setAttribute('role','button');}
 
 // ---------- init / chat (same /api contract) ----------
 async function init(){
+ loadStore();
  try{
   let m=await (await fetch('/api/models')).json();
   allModels=m.models||[];
-  loadStore();
   selectedModel=cur().model&&allModels.includes(cur().model)?cur().model:(m.default||allModels[0]||'');
   cur().model=selectedModel;
   document.getElementById('modelNow').textContent=selectedModel;
@@ -471,7 +595,10 @@ function addMsg(role,text,silent){
  let d=document.createElement('div');d.className='msg '+role;
  if(role==='assistant'&&text&&!String(text).startsWith('ERROR')&&!String(text).startsWith('... '))d.innerHTML=md(text);
  else d.textContent=text;
- document.getElementById('msgs').appendChild(d);d.scrollIntoView();return d;
+ document.getElementById('msgs').appendChild(d);
+ if(role==='user'){_pinned=true;scrollToBottom();}
+ else if(!silent)scrollIfPinned();
+ return d;
 }
 let currentRid=null, isRunning=false, steerBuffer=[];
 async function send(){
@@ -484,8 +611,9 @@ async function send(){
  if(filterVal&&filterVal!==selectedModel&&allModels.includes(filterVal)){pickModel(filterVal);}
  document.getElementById('modelNow').textContent=selectedModel;
  // P0-2: Safe Step Boundary — follow-ups while running go to /api/steer, never a racy second run
+ let echoed=false;
  if(isRunning&&currentRid){
-  addMsg('user',msg);
+  addMsg('user',msg);echoed=true;
   try{
    let s=await (await fetch('/api/steer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
    if(s.ok){steerBuffer.push(msg);return;}
@@ -494,25 +622,98 @@ async function send(){
    addMsg('assistant','... previous run finished, sending as new chat ...');
   }catch(e){steerBuffer.push(msg);return;}
  }
- addMsg('user',msg);
+ if(!echoed)addMsg('user',msg);
  let history=cur().history||[];
  let sys=document.getElementById('sys').value;
  let model=selectedModel;
- let wait=addMsg('assistant','');
- wait.innerHTML='<span class="spin"></span><span class="shimmer">thinking</span><span class="cursor">▍</span>';
-  setRunning(true);
-   // live background view: SSE push from /api/event (one connection, no 800ms polling)
-   let rid='r-'+Date.now()+'-'+Math.floor(Math.random()*1e6);
-   currentRid=rid;isRunning=true;steerBuffer=[];
-   let liveShown=0;
-   let es=null;
-   function stopLive(){try{if(es)es.close();}catch(_){}es=null;}
-   try{
-    es=new EventSource('/api/event?run='+encodeURIComponent(rid));
-    es.onmessage=e=>{try{let log=JSON.parse(e.data);renderTool(log);liveShown++;}catch(_){}};
-    es.addEventListener('done',stopLive);
-    es.onerror=()=>{/* server closes stream at done; final sweep below covers gaps */};
-   }catch(e){es=null;}
+  let wait=addMsg('assistant','');
+  wait.innerHTML='<span class="spin"></span><span class="shimmer">thinking</span><span class="cursor">▍</span>';
+   setRunning(true);
+    let rid='r-'+Date.now()+'-'+Math.floor(Math.random()*1e6);
+    currentRid=rid;isRunning=true;steerBuffer=[];
+    window._toolGroup=null;ensureToolGroup('Activity');_pinned=true;
+    let liveShown=0;
+    // live token streaming (hermes-webui pattern: rAF-throttled appends into a
+    // live bubble per assistant turn; thinking streams into a collapsible card)
+    let liveSegs=[{el:wait,text:'',streaming:false}], streamScheduled=false;
+    window._liveThinkCard=null;let liveThink='';
+    function curSeg(){return liveSegs[liveSegs.length-1];}
+    function liveFlush(){
+     streamScheduled=false;
+     let s=curSeg();
+     if(!s||!document.contains(s.el))return;
+     if(!s.streaming){s.streaming=true;s.el.textContent='';}
+     s.el.textContent=s.text+'▍';
+     scrollIfPinned();
+    }
+    function liveAppend(t){
+     curSeg().text+=t;
+     if(!streamScheduled){streamScheduled=true;requestAnimationFrame(liveFlush);}
+    }
+    function liveThinkAppend(t){
+     liveThink+=t;
+     if(!window._liveThinkCard){
+      let card=document.createElement('div');card.className='tool think open';
+      let head=document.createElement('div');head.className='tool-head';
+      let caret=document.createElement('span');caret.className='caret';caret.textContent='▼';
+      let icon=document.createElement('span');icon.textContent='💭';
+      let fn=document.createElement('span');fn.className='fname';fn.textContent='thinking';
+      let fs=document.createElement('span');fs.className='fsub';fs.textContent='live — click to collapse';
+      head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
+      let body=document.createElement('div');body.className='tool-body';
+      head.onclick=()=>{let open=card.classList.toggle('open');caret.textContent=open?'▼':'▶';};
+      card.appendChild(head);card.appendChild(body);
+      card._body=body;
+      // inserted above the live bubble: hold the reader's place if scrolled up
+      stableMutate(()=>{curSeg().el.before(card);});
+      window._liveThinkCard=card;
+     }
+     window._liveThinkCard._body.textContent=liveThink;
+     scrollIfPinned();
+     let pill=document.getElementById('livePill');
+     if(pill)pill.title='What the model is thinking now — click to jump\n\n'+liveThink.slice(-160);
+    }
+    function liveStep(){
+     // new assistant turn: freeze current bubble, open a fresh one at the end
+     // (a turn with no text yet — spinner only — is dropped instead of frozen)
+     let s=curSeg();
+     if(s.text){if(s.streaming)s.el.textContent=s.text;}
+     else if(document.contains(s.el))s.el.remove();
+     if(window._liveThinkCard)window._liveThinkCard.classList.remove('open');
+     let nb=document.createElement('div');nb.className='msg assistant';
+     document.getElementById('msgs').appendChild(nb);
+     liveSegs.push({el:nb,text:'',streaming:false});
+     scrollIfPinned();
+    }
+    function liveRestart(){
+     for(let s of liveSegs){s.text='';if(s.streaming){s.streaming=false;if(document.contains(s.el))s.el.textContent='';}}
+     if(window._liveThinkCard&&window._liveThinkCard.parentElement)window._liveThinkCard.remove();
+     window._liveThinkCard=null;liveThink='';
+    }
+    function finishLive(finalReply){
+     // markdown re-render changes bubble heights: hold the reader's place if scrolled up
+     stableMutate(()=>{
+      for(let s of liveSegs){
+       if(!document.contains(s.el))continue;
+       let txt=(finalReply!=null&&s===curSeg()&&s.text)?finalReply:s.text;
+       if(txt)s.el.innerHTML=md(txt);else s.el.remove();
+      }
+     });
+     scrollIfPinned();
+    }
+    let es=null;
+    function stopLive(){try{if(es)es.close();}catch(_){}es=null;}
+    try{
+     es=new EventSource('/api/event?run='+encodeURIComponent(rid));
+     es.onmessage=e=>{try{let log=JSON.parse(e.data);renderTool(log);liveShown++;}catch(_){}};
+     es.addEventListener('stream',e=>{try{liveAppend(JSON.parse(e.data).t||'');}catch(_){}});
+     es.addEventListener('stream_full',e=>{try{let s=curSeg();s.text=JSON.parse(e.data).t||'';s.streaming=true;if(document.contains(s.el))s.el.textContent=s.text+'▍';scrollIfPinned();}catch(_){}});
+     es.addEventListener('think',e=>{try{liveThinkAppend(JSON.parse(e.data).t||'');}catch(_){}});
+     es.addEventListener('think_full',e=>{try{liveThinkAppend(JSON.parse(e.data).t||'');}catch(_){}});
+     es.addEventListener('mark',e=>{try{let m=JSON.parse(e.data);if(m.step)liveStep();else liveRestart();}catch(_){}});
+     es.addEventListener('done',stopLive);
+     es.onerror=()=>{/* server closes stream at done; final sweep below covers gaps */};
+    }catch(e){es=null;}
   try{
    // P0-1: run+item_id is the idempotency key — network retry with same rid never forks a second LLM loop
    let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
@@ -521,13 +722,16 @@ async function send(){
     body:JSON.stringify(payload)});
    if(resp.status===409){let t=await resp.text();throw new Error('already running (retry with same id is deduped): '+t.slice(0,200));}
    if(!resp.ok){let t=await resp.text();throw new Error('HTTP '+resp.status+': '+t.slice(0,300));}
-   let r=await resp.json();
-   wait.remove();
-   stopLive();
-   setRunning(false);
-   if(!r.ok){addMsg('assistant','ERROR: '+r.error);isRunning=false;currentRid=null;return;}
-   if(r.queued){addMsg('assistant','... queued behind running session ...');isRunning=false;currentRid=null;return;}
-   addMsg('assistant',r.reply+(r.deduped?' (deduped retry)':''));
+    let r=await resp.json();
+    stopLive();
+    setRunning(false);
+    // streamed text stays in place: render final markdown into the live bubbles.
+    // No stream arrived (deduped/queued/error) → old path: single bubble.
+    let anyLive=liveSegs.some(s=>s.text);
+    finishLive(r.reply);
+    if(!r.ok){if(!anyLive)addMsg('assistant','ERROR: '+r.error);closeToolGroup();isRunning=false;currentRid=null;return;}
+    if(r.queued){addMsg('assistant','... queued behind running session ...');closeToolGroup();isRunning=false;currentRid=null;return;}
+    if(!anyLive)addMsg('assistant',r.reply+(r.deduped?' (deduped retry)':''));
    history.push({role:'user',content:msg});
    steerBuffer.forEach(m=>history.push({role:'user',content:m}));
    history.push({role:'assistant',content:r.reply});
@@ -538,8 +742,9 @@ async function send(){
    saveStore();renderSessions();
    // render any tools the live stream missed (dedupe by count)
    (r.tools||[]).forEach((x,i)=>{if(i>=liveShown)renderTool(x);});
+   closeToolGroup();
    isRunning=false;currentRid=null;steerBuffer=[];
-   }catch(e){stopLive();setRunning(false);isRunning=false;currentRid=null;wait.remove();console.error('[send failed]',e);addMsg('assistant','ERROR: fetch failed — is server.py running? '+e);}
+    }catch(e){stopLive();setRunning(false);isRunning=false;currentRid=null;closeToolGroup();finishLive(null);console.error('[send failed]',e);addMsg('assistant','ERROR: fetch failed — is server.py running? '+e);}
 }
 // v2 composer keys: Enter=send, Shift+Enter=newline, Esc=interrupt-while-running else blur
 async function interrupt(){
@@ -556,6 +761,19 @@ function setRunning(running){
  document.getElementById('in').placeholder=running
   ?'Add follow-up, / for commands, @ for context…'
   :'Ask anything, / for commands, @ for context…';
+ let pill=document.getElementById('livePill');
+ if(pill){pill.style.display=running?'inline-block':'none';if(!running)pill.title='What the model is thinking now — click to jump to it';}
+ // composer Stop: cancel the run without hunting for Esc (hermes-webui pattern)
+ let b=document.getElementById('sendBtn');
+ if(b){b.textContent=running?'Stop':'Send';b.onclick=running?function(e){e.preventDefault();interrupt();}:send;}
+}
+// LIVE pill: jump to whatever the model is generating/thinking right now
+function jumpLive(){
+ let segs=document.querySelectorAll('#msgs .msg.assistant');
+ let el=segs.length?segs[segs.length-1]:document.getElementById('msgs');
+ try{el.scrollIntoView({block:'center',behavior:'smooth'});}catch(_){el.scrollIntoView();}
+ el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');
+ setTimeout(()=>el.classList.remove('flash'),950);
 }
 init();
 </script>

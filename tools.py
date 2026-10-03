@@ -2,8 +2,9 @@
 Built-in tools ported from opencode v2 (packages/core/src/tool/plugin).
 https://github.com/anomalyco/opencode/tree/v2
 
-Tools: bash(=v2 shell), edit, write, read, grep, glob, lsp (local extra),
-       apply_patch(=v2 patch), skill, skill_manage, todowrite (local extra),
+Tools: bash(=v2 shell), process (bg job manager), edit, write, read, extract (pdf/docx),
+       grep, glob, lsp (local extra),
+        apply_patch(=v2 patch), skill, skill_manage, todowrite (local extra),
        cron (scheduled jobs), memory, session_search, webfetch, websearch, question, subagent,
        models(=v2 opencode_models),
        mcp_list_resources, mcp_read_resource (stubs: no MCP servers configured)
@@ -16,12 +17,46 @@ import json
 import os
 import re
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 TODO_FILE = Path(__file__).parent / ".todos.json"
 JOBS_DIR = Path(__file__).parent / ".jobs"
+
+
+def _sensitive_path(p: str):
+    """Sensitive-path guard for file writes. Returns reason or None.
+
+    Blocks keys and system config (~/.ssh, ~/.gnupg, /etc, /System, macOS
+    keychains, bare private-key filenames). Everything else — including the
+    project tree and other dotfiles — stays writable: this is a coding
+    agent, not a sandbox. Bypass with FORMY_FILE_SCOPE=allow. Never raises.
+    """
+    if (os.getenv("FORMY_FILE_SCOPE", "") or "").strip().lower() == "allow":
+        return None
+    try:
+        if not p or not str(p).strip():
+            return None
+        try:
+            abs_p = Path(p).expanduser().resolve()
+        except Exception:
+            abs_p = Path(os.path.abspath(os.path.expanduser(str(p))))
+        home = Path.home()
+        for d in (home / ".ssh", home / ".gnupg", Path("/etc"),
+                  Path("/System"), Path("/private/etc"),
+                  home / "Library" / "Keychains", Path("/Library/Keychains")):
+            try:
+                if abs_p == d or d in abs_p.parents:
+                    return f"sensitive path ({d})"
+            except Exception:
+                continue
+        if abs_p.name in ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"):
+            return "private key file"
+    except Exception:
+        return None
+    return None
 
 
 def _bound_text(text: str, name: str = "tool") -> str:
@@ -70,7 +105,9 @@ def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool 
     except Exception:
         pass
     if background:
-        # v2-style background job: detach, log to .jobs/<id>.log, agent reads it
+        # Background job: detach, log to .jobs/<id>.log, manage with process tool.
+        # stdin=PIPE so `process write` can send input; handle kept in PROCS
+        # (log file survives restarts even when the handle doesn't).
         try:
             JOBS_DIR.mkdir(parents=True, exist_ok=True)
             import time as _t
@@ -79,11 +116,15 @@ def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool 
             fh = open(logf, "w")
             fh.write(f"$ {command}\n")
             fh.flush()
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 command, shell=True, cwd=workdir or ".",
-                stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
+                stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
-            return f"started background {jid}\nlog: {logf}\nread it with the read tool."
+            _proc_register(jid, proc, logf, command)
+            return (f"started background {jid}\nlog: {logf}\n"
+                    f"manage with the process tool (poll/wait/log/kill/write), "
+                    f"or read the log with the read tool.")
         except Exception as e:
             return f"bash background error: {e}"
     try:
@@ -112,9 +153,151 @@ def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool 
         return f"bash error: {e}"
 
 
+# ---------- process (background job management) ----------
+# Companions bash background=true: poll/wait/log/kill/send-input on the
+# detached jobs it starts. Handles live in memory (lost on restart — the
+# .jobs/<id>.log file is the durable half and keeps working regardless).
+# Retains the newest PROC_CAP receipts; eviction never deletes log files.
+PROC_LOCK = threading.Lock()
+PROCS = {}
+PROC_CAP = 64
+
+
+def _proc_register(jid: str, popen, logf, command: str) -> None:
+    import time as _t
+    try:
+        with PROC_LOCK:
+            PROCS[jid] = {"popen": popen, "log": str(logf), "command": command,
+                          "started": _t.time(), "rc": None}
+            while len(PROCS) > PROC_CAP:
+                others = [k for k in PROCS if k != jid]
+                if not others:
+                    break
+                finished = [k for k in others if PROCS[k].get("rc") is not None]
+                pool = finished or others
+                victim = min(pool, key=lambda k: PROCS[k].get("started", 0))
+                del PROCS[victim]
+    except Exception:
+        pass
+
+
+def _proc_tail(logf: str, n: int = 4000) -> str:
+    try:
+        with open(logf, "r", errors="ignore") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - n))
+            return f.read()[-n:]
+    except Exception as e:
+        return f"(log unreadable: {e})"
+
+
+def _proc_refresh(v) -> None:
+    """Poll handle once, stamp rc when finished. Never raises."""
+    try:
+        if v.get("rc") is None and v.get("popen") is not None:
+            rc = v["popen"].poll()
+            if rc is not None:
+                v["rc"] = rc
+    except Exception:
+        pass
+
+
+def process(action: str = "list", session_id: str = "", timeout: int = 30, data: str = "") -> str:
+    """Manage bash background jobs. action=list|poll|wait|log|kill|write.
+
+    session_id is the job id from bash background=true (job-<ts>).
+    wait blocks up to timeout seconds (cap 300). write sends stdin + newline.
+    Read-only actions never raise; missing handles (post-restart) fall back
+    to the surviving .jobs log file.
+    """
+    a = (action or "list").strip().lower()
+    if a == "list":
+        with PROC_LOCK:
+            items = sorted(PROCS.items(), key=lambda kv: kv[1].get("started", 0))
+        if not items:
+            return "processes: (none — start one with bash background=true)"
+        lines = []
+        for jid, v in items:
+            _proc_refresh(v)
+            rc = v.get("rc")
+            st = "running" if rc is None else f"done rc={rc}"
+            lines.append(f"- {jid} [{st}] :: {str(v.get('command', ''))[:100]}")
+        return "\n".join(lines)
+    jid = (session_id or "").strip()
+    if not jid:
+        return "process error: need session_id (job id from bash background=true)"
+    with PROC_LOCK:
+        v = PROCS.get(jid)
+    if v is None:
+        logf = JOBS_DIR / f"{jid}.log"
+        if logf.exists():
+            return (f"{jid}: unknown (server restarted, handle lost) — log tail:\n"
+                    + _proc_tail(str(logf))[-2000:])
+        return f"process: unknown session {jid}"
+    p = v.get("popen")
+    if a == "poll":
+        _proc_refresh(v)
+        rc = v.get("rc")
+        st = "running" if rc is None else f"done rc={rc}"
+        return f"{jid} [{st}]\n--- log tail ---\n{_proc_tail(v['log'])[-2000:]}"
+    if a == "wait":
+        try:
+            cap = max(1, min(300, int(timeout or 30)))
+        except Exception:
+            cap = 30
+        if v.get("rc") is None and p is not None:
+            try:
+                v["rc"] = p.wait(timeout=cap)
+            except subprocess.TimeoutExpired:
+                return (f"{jid} [still running after {cap}s]\n--- log tail ---\n"
+                        + _proc_tail(v["log"])[-2000:])
+            except Exception as e:
+                return f"process wait error: {e}"
+        return f"{jid} [done rc={v.get('rc')}]\n--- log tail ---\n{_proc_tail(v['log'])[-2000:]}"
+    if a == "log":
+        try:
+            return _bound_text(Path(v["log"]).read_text(errors="ignore"), "process")
+        except Exception as e:
+            return f"process log error: {e}"
+    if a == "kill":
+        if v.get("rc") is not None:
+            return f"{jid} already done rc={v['rc']}"
+        if p is None:
+            return f"{jid}: no handle (server restarted?) — cannot kill, read the log instead"
+        try:
+            p.terminate()
+            try:
+                rc = p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                rc = p.wait(timeout=5)
+            v["rc"] = rc
+            return f"{jid} killed (rc={rc})"
+        except Exception as e:
+            return f"process kill error: {e}"
+    if a == "write":
+        if v.get("rc") is not None:
+            return f"{jid} already done rc={v['rc']} (no stdin)"
+        if p is None or p.stdin is None:
+            return f"{jid}: no stdin channel (job predates stdin support?)"
+        try:
+            chunk = str(data or "")
+            p.stdin.write((chunk + ("\n" if not chunk.endswith("\n") else "")).encode("utf-8", errors="replace"))
+            p.stdin.flush()
+            return f"{jid}: sent {len(chunk)} chars to stdin"
+        except Exception as e:
+            return f"process write error: {e}"
+    return f"process: unknown action {action} (use list|poll|wait|log|kill|write)"
+
+
 # ---------- edit ----------
 def edit(filePath: str, oldString: str, newString: str, replaceAll: bool = False) -> str:
     """Exact string replacement. Mirrors opencode `edit` tool."""
+    blocked = _sensitive_path(filePath)
+    if blocked:
+        return (f"edit blocked: {blocked}: {filePath} — set FORMY_FILE_SCOPE=allow "
+                f"to override (sandbox only)")
     p = Path(filePath)
     if not p.exists():
         return f"edit error: file not found: {filePath}"
@@ -140,6 +323,10 @@ def edit(filePath: str, oldString: str, newString: str, replaceAll: bool = False
 # ---------- write ----------
 def write(filePath: str, content: str) -> str:
     """Create or overwrite files. Mirrors opencode `write` tool."""
+    blocked = _sensitive_path(filePath)
+    if blocked:
+        return (f"write blocked: {blocked}: {filePath} — set FORMY_FILE_SCOPE=allow "
+                f"to override (sandbox only)")
     p = Path(filePath)
     try:
         if p.parent and str(p.parent) not in ("", "."):
@@ -182,6 +369,109 @@ def read(filePath: str, offset: int = 1, limit: int = 2000) -> str:
         return header + "\n".join(numbered)
     except Exception as e:
         return f"read error: {e}"
+
+
+# ---------- extract (document text extraction, stdlib-only) ----------
+def _pdf_unescape(s: str) -> str:
+    return (s.replace("\\\\", "\x00").replace("\\(", "(").replace("\\)", ")")
+             .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+             .replace("\x00", "\\"))
+
+
+def _pdf_content_text(data: bytes) -> str:
+    """Pull (text) Tj / [...] TJ / (text) ' strings from one PDF content stream.
+
+    WinAnsi-decoded (latin-1); CJK Identity-H text won't decode — noted, not fixed.
+    Layout is approximate (one line per BT block); good for reading/search, not print fidelity.
+    """
+    try:
+        text = data.decode("latin-1")
+    except Exception:
+        return ""
+    lines = []
+    for chunk in text.split("BT"):
+        parts = []
+        for m in re.finditer(r"\(((?:\\.|[^()\\])*)\)\s*(?:Tj|'|\")", chunk):
+            piece = _pdf_unescape(m.group(1))
+            if piece:
+                parts.append(piece)
+        for m in re.finditer(r"\[(.*?)\]\s*TJ", chunk, re.S):
+            joined = "".join(_pdf_unescape(s.group(1))
+                             for s in re.finditer(r"\(((?:\\.|[^()\\])*)\)", m.group(1)))
+            if joined:
+                parts.append(joined)
+        line = " ".join(parts).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _pdf_text(p: Path) -> str:
+    try:
+        size = p.stat().st_size
+    except Exception as e:
+        return f"extract error: {e}"
+    if size > 50_000_000:
+        return f"extract error: pdf too large ({size} bytes, max 50MB)"
+    try:
+        raw = p.read_bytes()
+    except Exception as e:
+        return f"extract error: {e}"
+    import zlib as _z
+    streams = re.findall(rb"stream\r?\n(.*?)endstream", raw, re.S)
+    parts = []
+    if streams:
+        for data in streams:
+            data = data.strip(b"\r\n")
+            try:
+                dec = _z.decompress(data)
+            except Exception:
+                dec = data  # not flate — raw content stream, parse as-is
+            t = _pdf_content_text(dec)
+            if t:
+                parts.append(t)
+    else:
+        t = _pdf_content_text(raw)
+        if t:
+            parts.append(t)
+    text = re.sub(r"[ \t]+", " ", "\n".join(parts))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
+        return "extract: no text found (scanned-image PDF? OCR is not supported)"
+    return text
+
+
+def _docx_text(p: Path) -> str:
+    import zipfile as _zip
+    try:
+        with _zip.ZipFile(p) as z:
+            xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
+    except Exception as e:
+        return f"extract error: bad docx: {e}"
+    xml = re.sub(r"</w:p[^>]*>", "\n", xml)
+    xml = re.sub(r"<[^>]+>", "", xml)
+    import html as _html
+    text = re.sub(r"\n{3,}", "\n\n", _html.unescape(xml)).strip()
+    return text if text else "extract: no text found"
+
+
+def extract(filePath: str = "") -> str:
+    """Extract readable text from documents. pdf (text-based) + docx/docm via
+    stdlib; anything else falls back to read(). Scanned-image PDFs need OCR
+    (not supported — says so instead of returning garbage)."""
+    if not filePath:
+        return "extract error: need filePath"
+    p = Path(filePath)
+    if not p.exists():
+        return f"extract error: not found: {filePath}"
+    if p.is_dir():
+        return read(filePath)
+    ext = p.suffix.lower()
+    if ext == ".pdf":
+        return _bound_text(_pdf_text(p), "extract")
+    if ext in (".docx", ".docm"):
+        return _bound_text(_docx_text(p), "extract")
+    return read(filePath)
 
 
 # ---------- grep (v2 parity: literal/caseSensitive/limit) ----------
@@ -312,6 +602,15 @@ def apply_patch(patchText: str) -> str:
         if not cur_op or not cur_path:
             buf = []
             return
+        blocked = _sensitive_path(cur_path)
+        src = getattr(flush, "_src", None)
+        if not blocked and cur_op == "move" and src:
+            blocked = _sensitive_path(src)
+        if blocked:
+            log.append(f"blocked sensitive path ({cur_op} {cur_path}): {blocked}")
+            buf = []
+            flush._src = None
+            return
         p = Path(cur_path)
         try:
             if cur_op == "add":
@@ -383,21 +682,25 @@ def apply_patch(patchText: str) -> str:
             cur_op = None
             cur_path = None
             flush._src = None
-            try:
-                if not src or not Path(src).exists():
-                    log.append(f"move failed: src not found {src}")
-                else:
-                    d = Path(dest)
-                    if d.parent and str(d.parent) not in ("", "."):
-                        d.parent.mkdir(parents=True, exist_ok=True)
-                    Path(src).rename(d)
-                    if content:
-                        d.write_text("\n".join(content) + "\n")
-                        log.append(f"moved {src} -> {dest} (with updated content)")
+            blocked = _sensitive_path(dest) or (_sensitive_path(src) if src else None)
+            if blocked:
+                log.append(f"blocked sensitive path (move {src} -> {dest}): {blocked}")
+            else:
+                try:
+                    if not src or not Path(src).exists():
+                        log.append(f"move failed: src not found {src}")
                     else:
-                        log.append(f"moved {src} -> {dest}")
-            except Exception as e:
-                log.append(f"error move {src} -> {dest}: {e}")
+                        d = Path(dest)
+                        if d.parent and str(d.parent) not in ("", "."):
+                            d.parent.mkdir(parents=True, exist_ok=True)
+                        Path(src).rename(d)
+                        if content:
+                            d.write_text("\n".join(content) + "\n")
+                            log.append(f"moved {src} -> {dest} (with updated content)")
+                        else:
+                            log.append(f"moved {src} -> {dest}")
+                except Exception as e:
+                    log.append(f"error move {src} -> {dest}: {e}")
             cur_op = None
             cur_path = None
         elif s in ("*** Begin Patch", "*** End Patch", "*** End of Patch"):
@@ -498,10 +801,35 @@ def todowrite(action: str = "list", todos: str = "") -> str:
 
 
 # ---------- webfetch (v2 parity: format/timeout) ----------
+def _webfetch_blocked(url: str):
+    """Loopback/metadata guard for webfetch. Returns reason or None.
+
+    Single-user localhost agent already trusts the model with shell (which can
+    curl anything), so this is defense-in-depth: stop accidental fetches of
+    loopback services and cloud metadata, not a sandbox boundary.
+    """
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").strip().lower().rstrip(".")
+    except Exception:
+        return None
+    if not host:
+        return None
+    if host in ("localhost", "ip6-localhost", "0.0.0.0", "::", "::1") or host.startswith("localhost."):
+        return "loopback host"
+    if host.startswith("127.") or host.startswith("[::1]"):
+        return "loopback host"
+    if host.startswith("169.254.") or host == "metadata.google.internal":
+        return "cloud metadata / link-local"
+    return None
+
+
 def webfetch(url: str, fmt: str = "markdown", timeout: int = 30) -> str:
     """Fetch URL. Mirrors v2 `webfetch` (text/markdown/html, read-only)."""
     if not url or not url.startswith(("http://", "https://")):
         return "webfetch error: url must start with http:// or https://"
+    blocked = _webfetch_blocked(url)
+    if blocked:
+        return f"webfetch blocked: {blocked} ({url[:120]}) — use the read tool for local files"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "formyproject-agent/1.0"})
         with urllib.request.urlopen(req, timeout=max(1, min(120, int(timeout or 30)))) as r:
@@ -1173,12 +1501,21 @@ def execute_tool(name: str, args: dict) -> str:
         if name == "bash":
             return bash(args.get("command", ""), args.get("workdir", "."),
                         int(args.get("timeout", 120)), bool(args.get("background", False)))
+        if name == "process":
+            try:
+                _to = int(args.get("timeout", 30))
+            except Exception:
+                _to = 30
+            return process(args.get("action", "list"), args.get("session_id", ""),
+                           _to, args.get("data", ""))
         if name == "edit":
             return edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), bool(args.get("replaceAll", False)))
         if name == "write":
             return write(args.get("filePath", ""), args.get("content", ""))
         if name == "read":
             return read(args.get("filePath", ""), int(args.get("offset", 1)), int(args.get("limit", 2000)))
+        if name == "extract":
+            return extract(args.get("filePath", ""))
         if name == "grep":
             return grep(args.get("pattern", ""), args.get("path", "."), args.get("include", "*"),
                         bool(args.get("literal", False)), bool(args.get("caseSensitive", True)),
@@ -1231,10 +1568,12 @@ def execute_tool(name: str, args: dict) -> str:
 
 
 TOOLS_SPECS = [
-    {"type": "function", "function": {"name": "bash", "description": "Execute shell commands (npm, git, pytest, etc). Set background=true for long jobs; read .jobs/<id>.log.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout": {"type": "integer"}, "background": {"type": "boolean"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "bash", "description": "Execute shell commands (npm, git, pytest, etc). Set background=true for long jobs; manage with the process tool.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout": {"type": "integer"}, "background": {"type": "boolean"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "process", "description": "Manage bash background jobs. action=list|poll|wait|log|kill|write. session_id is the job id.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "session_id": {"type": "string"}, "timeout": {"type": "integer"}, "data": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "edit", "description": "Exact string replacement in existing files.", "parameters": {"type": "object", "properties": {"filePath": {"type": "string"}, "oldString": {"type": "string"}, "newString": {"type": "string"}, "replaceAll": {"type": "boolean"}}, "required": ["filePath", "oldString", "newString"]}}},
     {"type": "function", "function": {"name": "write", "description": "Create or overwrite files.", "parameters": {"type": "object", "properties": {"filePath": {"type": "string"}, "content": {"type": "string"}}, "required": ["filePath", "content"]}}},
     {"type": "function", "function": {"name": "read", "description": "Read file contents or list directory. Supports offset/limit.", "parameters": {"type": "object", "properties": {"filePath": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["filePath"]}}},
+    {"type": "function", "function": {"name": "extract", "description": "Extract readable text from documents (pdf, docx); falls back to read for plain text.", "parameters": {"type": "object", "properties": {"filePath": {"type": "string"}}, "required": ["filePath"]}}},
     {"type": "function", "function": {"name": "grep", "description": "Search content (ripgrep). literal=true for fixed strings, caseSensitive=false to ignore case.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "include": {"type": "string"}, "literal": {"type": "boolean"}, "caseSensitive": {"type": "boolean"}, "limit": {"type": "integer"}}, "required": ["pattern"]}}},
     {"type": "function", "function": {"name": "glob", "description": "Find files by glob pattern like **/*.py. hidden=true includes dotfiles.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "hidden": {"type": "boolean"}, "limit": {"type": "integer"}}, "required": ["pattern"]}}},
     {"type": "function", "function": {"name": "lsp", "description": "Code intelligence (fallback grep-based). ops: workspaceSymbol, documentSymbol, goToDefinition, findReferences, hover.", "parameters": {"type": "object", "properties": {"operation": {"type": "string"}, "file": {"type": "string"}, "line": {"type": "integer"}, "col": {"type": "integer"}, "query": {"type": "string"}}}}},
@@ -1270,9 +1609,9 @@ def _tool_available(name: str) -> bool:
 
 
 TOOLSETS = {
-    "files": ["read", "write", "edit", "apply_patch", "glob", "grep"],
-    "shell": ["bash"],
-    "search": ["grep", "glob", "lsp", "session_search", "webfetch", "websearch"],
+    "files": ["read", "write", "edit", "apply_patch", "extract", "glob", "grep"],
+    "shell": ["bash", "process"],
+    "search": ["grep", "glob", "lsp", "extract", "session_search", "webfetch", "websearch"],
     "agent": ["skill", "skill_manage", "todowrite", "cron", "memory", "subagent", "question", "models"],
     "mcp": ["mcp_list_resources", "mcp_read_resource"],
     "all": [t["function"]["name"] for t in TOOLS_SPECS],

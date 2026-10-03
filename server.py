@@ -143,13 +143,159 @@ def _model_chain(primary):
     return chain
 
 
+def _emit_run(run_id, key, value):
+    """Append a live SSE payload to a run (token deltas, thinking, step marks). Never raises."""
+    if not run_id:
+        return
+    try:
+        with RUNS_LOCK:
+            run = RUNS.get(run_id)
+            if run is None:
+                return
+            run.setdefault(key, []).append(value)
+            run["ts"] = time.time()
+    except Exception:
+        pass
+
+
+def _append_thinking(tool_logs, live_logs, run_id, thinking):
+    """Persist one step's reasoning as a thinking tool entry (UI card + export + history)."""
+    entry = {"tool": "thinking", "args": {}, "result": (thinking or "")[:2000]}
+    tool_logs.append(entry)
+    if live_logs is not None:
+        try:
+            with RUNS_LOCK:
+                live_logs.append(entry)
+                if run_id and run_id in RUNS:
+                    RUNS[run_id]["ts"] = time.time()
+        except Exception:
+            pass
+
+
+def _consume_chat_stream(stream, run_id):
+    """Consume one OpenAI stream. Returns {content, thinking, tool_calls, interrupted}.
+
+    Token + reasoning deltas are emitted live for SSE. Tool calls accumulate by
+    index (id/name/args may arrive across chunks; missing ids are synthesized).
+    Interrupt flag is checked per chunk: breaks and closes early. Chunk-shape
+    quirks never raise; transport errors propagate for retry handling.
+    """
+    parts, thinks = [], []
+    tc_accum = {}
+    interrupted = False
+    try:
+        for chunk in stream:
+            if _is_interrupted(run_id):
+                interrupted = True
+                break
+            try:
+                choices = getattr(chunk, "choices", None) or []
+            except Exception:
+                continue
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+            r = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            if r:
+                thinks.append(r)
+                _emit_run(run_id, "thinking", r)
+            c = getattr(delta, "content", None)
+            if c:
+                parts.append(c)
+                _emit_run(run_id, "stream", c)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                try:
+                    idx = int(getattr(tc, "index", 0) or 0)
+                except Exception:
+                    idx = 0
+                e = tc_accum.setdefault(idx, {"id": "", "name": "", "args": []})
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    fid = getattr(fn, "id", None)
+                    if fid and not e["id"]:
+                        e["id"] = fid
+                    nm = getattr(fn, "name", None)
+                    if nm:
+                        e["name"] = nm
+                    ag = getattr(fn, "arguments", None)
+                    if ag:
+                        e["args"].append(ag)
+                tid = getattr(tc, "id", None)
+                if tid and not e["id"]:
+                    e["id"] = tid
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+    calls = []
+    for i in sorted(tc_accum):
+        e = tc_accum[i]
+        calls.append({"id": e["id"] or f"tc-{run_id}-{i}", "type": "function",
+                      "function": {"name": e["name"], "arguments": "".join(e["args"])}})
+    return {"content": "".join(parts), "thinking": "".join(thinks),
+            "tool_calls": calls, "interrupted": interrupted}
+
+
+def _chat_stream_with_retry(client, model, messages, tools, run_id=None, live_logs=None):
+    """Streaming chat call: initial request + max 4 restarts, jittered 1/2/4/8s backoff.
+
+    Creation failures retry like the non-streaming path. A mid-stream transport
+    failure emits a restart mark (frontend clears the live bubble) and rebuilds
+    the stream — safe because tools only run after a step fully streams.
+    Returns _consume_chat_stream dict. Raises last error for fallback handling.
+    """
+    import random
+    last = None
+    for attempt in range(5):
+        try:
+            kwargs = {"model": model, "messages": messages, "stream": True}
+            if tools is not None:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            stream = client.chat.completions.create(**kwargs)
+        except Exception as e:
+            last = e
+            if attempt >= 4 or not _is_retryable(e):
+                raise
+            delay = (2 ** attempt) + random.random() * 0.5
+            log(f"/api/chat retry.scheduled run={run_id} attempt={attempt + 1}/4 delay={delay:.1f}s err={str(e)[:200]}")
+            if live_logs is not None:
+                with RUNS_LOCK:
+                    live_logs.append({"tool": "retry", "args": {"attempt": attempt + 1}, "result": f"retry.scheduled in {delay:.1f}s: {str(e)[:300]}"})
+                    if run_id and run_id in RUNS:
+                        RUNS[run_id]["ts"] = time.time()
+            time.sleep(delay)
+            continue
+        try:
+            return _consume_chat_stream(stream, run_id)
+        except Exception as e:
+            last = e
+            if attempt >= 4 or not _is_retryable(e):
+                raise
+            delay = (2 ** attempt) + random.random() * 0.5
+            log(f"/api/chat stream.restart run={run_id} attempt={attempt + 1}/4 delay={delay:.1f}s err={str(e)[:200]}")
+            _emit_run(run_id, "marks", {"restart": attempt + 1})
+            time.sleep(delay)
+            continue
+    raise last
+
+
 def _chat_create_with_fallback(client, primary, messages, tools=None, run_id=None, live_logs=None):
-    """Try each model in _model_chain; return (response, used_model). Raises last error."""
+    """Try each model in _model_chain with token streaming; return (result, used_model).
+
+    result = {content, thinking, tool_calls, interrupted}. A model switch emits
+    a restart mark (frontend clears the partial bubble). Raises last error.
+    Non-streaming callers (_maybe_compact summarizer) still use
+    _chat_create_with_retry directly.
+    """
     last = None
     chain = _model_chain(primary)
     for i, model in enumerate(chain):
         try:
-            return _chat_create_with_retry(client, model, messages, tools, run_id=run_id, live_logs=live_logs), model
+            return _chat_stream_with_retry(client, model, messages, tools, run_id=run_id, live_logs=live_logs), model
         except Exception as e:
             last = e
             if i >= len(chain) - 1:
@@ -162,6 +308,7 @@ def _chat_create_with_fallback(client, primary, messages, tools=None, run_id=Non
                                       "result": f"switched model after error: {str(e)[:300]}"})
                     if run_id and run_id in RUNS:
                         RUNS[run_id]["ts"] = time.time()
+            _emit_run(run_id, "marks", {"restart": 0, "fallback": nxt})
     raise last
 
 
@@ -412,57 +559,67 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
     cur_model = model  # fallback may switch mid-run; rest of run stays on working model
-    for _ in range(max_steps):
+    for step_n in range(max_steps):
         if _is_interrupted(run_id):
             return ("(interrupted by user)", tool_logs, messages, True)
         _maybe_compact(client, cur_model, messages, run_id, live_logs, tool_logs)
-        resp, cur_model = _chat_create_with_fallback(client, cur_model, messages, SERVER_TOOLS_SPECS, run_id=run_id, live_logs=live_logs)
-        msg = resp.choices[0].message
-        m = {"role": "assistant", "content": msg.content or ""}
-        if getattr(msg, "tool_calls", None):
-            m["tool_calls"] = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
-            ]
+        if step_n > 0:
+            _emit_run(run_id, "marks", {"step": step_n + 1})
+        res, cur_model = _chat_create_with_fallback(client, cur_model, messages, SERVER_TOOLS_SPECS, run_id=run_id, live_logs=live_logs)
+        if res.get("interrupted"):
+            # Esc mid-generation: keep the partial text so the UI shows what
+            # arrived before the stop instead of swallowing it.
+            tail = (res.get("content") or "").strip()
+            reply = (tail + "\n\n*(interrupted by user)*") if tail else "(interrupted by user)"
+            if res.get("thinking"):
+                _append_thinking(tool_logs, live_logs, run_id, res["thinking"])
+            return (reply, tool_logs, messages, True)
+        tcalls = res.get("tool_calls") or []
+        m = {"role": "assistant", "content": res.get("content") or ""}
+        if tcalls:
+            m["tool_calls"] = tcalls
         messages.append(m)
-        if not getattr(msg, "tool_calls", None):
+        if res.get("thinking"):
+            _append_thinking(tool_logs, live_logs, run_id, res["thinking"])
+        if not tcalls:
             # P0-2: steered follow-ups extend the same run instead of starting a racy new one
             if _drain_steer(run_id, messages):
                 continue
-            return (msg.content or "(empty)", tool_logs, messages, False)
+            return (m["content"] or "(empty)", tool_logs, messages, False)
         # Parse args sequentially (cheap), execute concurrently (Hermes pattern).
         # Bad JSON stays a per-call error (P0-5); question stays disabled.
         # Responses appended in tool_calls order (providers validate sequence).
         inline = {}
         pending = []
-        for tc in msg.tool_calls:
-            name = tc.function.name
+        for tc in tcalls:
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name", "?")
+            tc_id = tc.get("id", "")
             try:
-                args = json.loads(tc.function.arguments or "{}")
+                args = json.loads(fn.get("arguments") or "{}")
             except Exception as e:
                 # P0-5: bad JSON is a per-call error, not a run abort
                 err = f"tool {name} error: invalid JSON arguments: {e}"
-                inline[tc.id] = ({"tool": name, "args": {}, "result": err[:2000]}, err)
+                inline[tc_id] = ({"tool": name, "args": {}, "result": err[:2000]}, err)
                 continue
             if name == "question":
                 # never block the HTTP handler on input()
                 result = "question tool is disabled in web mode; make your best guess and continue."
-                inline[tc.id] = ({"tool": name, "args": args, "result": result[:2000]}, result)
+                inline[tc_id] = ({"tool": name, "args": args, "result": result[:2000]}, result)
                 continue
-            pending.append((tc.id, name, args))
+            pending.append((tc_id, name, args))
         for (tc_id, name, _args), (entry, result) in zip(pending, run_tool_calls(pending)):
             # P0-4: model gets bounded preview, full text retained under .jobs/
             inline[tc_id] = (entry, _bound_for_model(result, name, tc_id))
-        for tc in msg.tool_calls:
-            entry, content = inline[tc.id]
+        for tc in tcalls:
+            entry, content = inline[tc.get("id", "")]
             tool_logs.append(entry)
             if live_logs is not None:
                 with RUNS_LOCK:
                     live_logs.append(entry)
                     if run_id and run_id in RUNS:
                         RUNS[run_id]["ts"] = time.time()
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": content})
         # P0-2: Safe Step Boundary — deliver steers here, before next LLM step
         _drain_steer(run_id, messages)
         if _is_interrupted(run_id):
@@ -516,7 +673,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         idx = 0
         deadline = _t.time() + 600
+        # live token/thinking channels: late joiners get one catch-up snapshot,
+        # then deltas. Step marks are live-only (no replay — one bubble suffices).
+        with RUNS_LOCK:
+            _live = RUNS.get(rid)
+            s_full = "".join(_live.get("stream", []) or []) if _live else ""
+            t_full = "".join(_live.get("thinking", []) or []) if _live else ""
+            s_idx = len(_live.get("stream", []) or []) if _live else 0
+            t_idx = len(_live.get("thinking", []) or []) if _live else 0
+            m_idx = len(_live.get("marks", []) or []) if _live else 0
         try:
+            if s_full:
+                self.wfile.write(f"event: stream_full\ndata: {json.dumps({'t': s_full})}\n\n".encode())
+            if t_full:
+                self.wfile.write(f"event: think_full\ndata: {json.dumps({'t': t_full})}\n\n".encode())
             for entry in (snap if snap is not None else (stored.get("tools") or [])):
                 self.wfile.write(f"data: {json.dumps(entry)}\n\n".encode())
                 idx += 1
@@ -533,6 +703,18 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     logs = list(run["logs"])
                     is_done = run.get("done")
+                    s_new = list(run.get("stream", []))
+                    t_new = list(run.get("thinking", []))
+                    m_new = list(run.get("marks", []))
+                while s_idx < len(s_new):
+                    self.wfile.write(f"event: stream\ndata: {json.dumps({'t': s_new[s_idx]})}\n\n".encode())
+                    s_idx += 1
+                while t_idx < len(t_new):
+                    self.wfile.write(f"event: think\ndata: {json.dumps({'t': t_new[t_idx]})}\n\n".encode())
+                    t_idx += 1
+                while m_idx < len(m_new):
+                    self.wfile.write(f"event: mark\ndata: {json.dumps(m_new[m_idx])}\n\n".encode())
+                    m_idx += 1
                 while idx < len(logs):
                     self.wfile.write(f"data: {json.dumps(logs[idx])}\n\n".encode())
                     idx += 1
@@ -610,7 +792,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
+        if length < 0:
+            length = 0
+        if length > 10_000_000:
+            self.send_json({"ok": False, "error": "body too large (max 10MB)"}, 413)
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(raw or b"{}")
@@ -682,7 +872,8 @@ class Handler(BaseHTTPRequestHandler):
                         log(f"/api/chat queued run={run_id} behind={active}")
                         self.send_json({"ok": True, "queued": True, "run": run_id, "behind": active})
                         return
-                RUNS[run_id] = {"logs": [], "done": False, "reply": None, "ts": time.time(), "steer": []}
+                RUNS[run_id] = {"logs": [], "done": False, "reply": None, "ts": time.time(), "steer": [],
+                                "stream": [], "thinking": [], "marks": []}
                 live = RUNS[run_id]["logs"]
             _claim_start(run_id)
             log(f"/api/chat model={model} run={run_id} msg_len={len(user_msg)} hist={len(history)} sys_len={len(system)}")
@@ -750,7 +941,13 @@ def _cron_tick():
 
     Best-effort: every failure is caught, marked, and logged. Never raises,
     never blocks chat traffic (runs in its own daemon thread).
+    Overlap guard: a job already running is skipped (belt-and-suspenders —
+    the tick thread is single-threaded, but this stays safe if tick is ever
+    called re-entrantly).
     """
+    if not hasattr(_cron_tick, "_running"):
+        _cron_tick._running = set()
+        _cron_tick._lock = threading.Lock()
     try:
         import cron as _cron
     except Exception as e:
@@ -763,6 +960,11 @@ def _cron_tick():
         return
     for job in due:
         jid = job.get("id", "?")
+        with _cron_tick._lock:
+            if jid in _cron_tick._running:
+                log(f"cron job {jid} skipped (already running)")
+                continue
+            _cron_tick._running.add(jid)
         try:
             try:
                 from prompt import build_system_prompt as _build_sys
@@ -802,6 +1004,9 @@ def _cron_tick():
             except Exception:
                 pass
             log(f"cron job {jid} ERROR: {e}")
+        finally:
+            with _cron_tick._lock:
+                _cron_tick._running.discard(jid)
 
 
 def _cron_start(interval_s: int = 30):

@@ -2,6 +2,7 @@
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>formyproject agent</title>
+<script>try{var _sk=localStorage.getItem('formy.skin');if(_sk)document.documentElement.dataset.skin=_sk;}catch(e){}</script>
 <style>
 /* Theme tokens (v2-desktop inspired: flat CSS vars, dark default + light override) */
 :root{
@@ -22,10 +23,24 @@
   --border:#dfe3ea;--border-strong:#c9d0dc;
   --hover:#e3e8f0;--accent:#2b6cb0;--accent-text:#1c7a3d;
   --error:#b3261e;--diff-add:#dff3e4;--diff-del:#fbe3e5;
-   --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;
+  --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;
   color-scheme:light;
  }
 }
+/* skins: accent palettes from nesquena/hermes-webui (MIT). data-skin on <html>, default = no attribute. */
+:root[data-skin="ares"]{--accent:#C0392B;--accent-hover:#A93226;--accent-bg:rgba(192,57,43,0.08);--accent-bg-strong:rgba(192,57,43,0.15);--accent-text:#922B21;}
+@media (prefers-color-scheme:dark){:root[data-skin="ares"]{--accent:#FF4444;--accent-hover:#CC3333;--accent-bg:rgba(255,68,68,0.08);--accent-bg-strong:rgba(255,68,68,0.15);--accent-text:#FF4444;}}
+:root[data-skin="mono"]{--accent:#666666;--accent-hover:#555555;--accent-bg:rgba(102,102,102,0.08);--accent-bg-strong:rgba(102,102,102,0.15);--accent-text:#555555;}
+@media (prefers-color-scheme:dark){:root[data-skin="mono"]{--accent:#CCCCCC;--accent-hover:#999999;--accent-bg:rgba(204,204,204,0.08);--accent-bg-strong:rgba(204,204,204,0.15);--accent-text:#CCCCCC;}}
+:root[data-skin="slate"]{--accent:#475569;--accent-hover:#334155;--accent-bg:rgba(71,85,105,0.08);--accent-bg-strong:rgba(71,85,105,0.15);--accent-text:#334155;}
+@media (prefers-color-scheme:dark){:root[data-skin="slate"]{--accent:#94A3B8;--accent-hover:#64748B;--accent-bg:rgba(148,163,184,0.08);--accent-bg-strong:rgba(148,163,184,0.15);--accent-text:#94A3B8;}}
+:root[data-skin="poseidon"]{--accent:#0369A1;--accent-hover:#025080;--accent-bg:rgba(3,105,161,0.08);--accent-bg-strong:rgba(3,105,161,0.15);--accent-text:#025080;}
+@media (prefers-color-scheme:dark){:root[data-skin="poseidon"]{--accent:#0EA5E9;--accent-hover:#0284C7;--accent-bg:rgba(14,165,233,0.08);--accent-bg-strong:rgba(14,165,233,0.15);--accent-text:#0EA5E9;}}
+:root[data-skin="sisyphus"]{--accent:#7C3AED;--accent-hover:#6D28D9;--accent-bg:rgba(124,58,237,0.08);--accent-bg-strong:rgba(124,58,237,0.15);--accent-text:#6D28D9;}
+@media (prefers-color-scheme:dark){:root[data-skin="sisyphus"]{--accent:#A78BFA;--accent-hover:#8B5CF6;--accent-bg:rgba(167,139,250,0.08);--accent-bg-strong:rgba(167,139,250,0.15);--accent-text:#A78BFA;}}
+:root[data-skin="charizard"]{--accent:#EA580C;--accent-hover:#C2410C;--accent-bg:rgba(234,88,12,0.08);--accent-bg-strong:rgba(234,88,12,0.15);--accent-text:#C2410C;}
+@media (prefers-color-scheme:dark){:root[data-skin="charizard"]{--accent:#FB923C;--accent-hover:#F97316;--accent-bg:rgba(251,146,60,0.08);--accent-bg-strong:rgba(251,146,60,0.15);--accent-text:#FB923C;}}
+.sess.active{background:var(--accent-bg,var(--layer-2));border-color:var(--accent-text,var(--border-strong));}
 *{box-sizing:border-box}
 body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:var(--bg);color:var(--text)}
 /* v2 type scale: chrome 13px, messages 14px/160%, h1 17 h2 15 h3 13 */
@@ -134,6 +149,15 @@ h4{margin:12px 0 6px}
 <div id="modelList" data-slot="model-selector-list"></div>
 </div>
 <span id="modelNow" style="font-size:12px;color:var(--accent-text)"></span>
+<select id="skinPick" title="Skin (accent palette)" style="font-size:12px;max-width:130px">
+<option value="">skin: default</option>
+<option value="ares">skin: ares</option>
+<option value="mono">skin: mono</option>
+<option value="slate">skin: slate</option>
+<option value="poseidon">skin: poseidon</option>
+<option value="sisyphus">skin: sisyphus</option>
+<option value="charizard">skin: charizard</option>
+</select>
 <span id="status" style="font-size:12px;color:var(--muted)"></span>
 <span style="flex:1"></span>
 <button id="newBtn" title="New session">+ New</button>
@@ -155,6 +179,20 @@ h4{margin:12px 0 6px}
 </aside>
 </div>
 <script>
+// ---------- skins (accent palettes ported from nesquena/hermes-webui, MIT) ----------
+function applySkin(name){
+ try{
+  if(name)document.documentElement.dataset.skin=name;
+  else delete document.documentElement.dataset.skin;
+  localStorage.setItem('formy.skin',name||'');
+ }catch(e){}
+}
+try{
+ let cur='';
+ try{cur=localStorage.getItem('formy.skin')||'';}catch(e){}
+ let sp=document.getElementById('skinPick');
+ if(sp){sp.value=cur;sp.addEventListener('change',e=>applySkin(e.target.value));}
+}catch(e){}
 // ---------- session store (desktop tabs pattern, localStorage) ----------
 const LS_SESS='formy.sessions.v1', LS_ACTIVE='formy.active.v1';
 let sessions={}, activeId=null;

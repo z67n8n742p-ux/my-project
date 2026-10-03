@@ -113,12 +113,13 @@ NO_BROWSER=1 PORT=8000 python3 server.py   # open http://localhost:8000
   Found 2026-10-03: caught a real stray-`}` that naive bracket-counting missed.
 - Stream chunk granularity is provider-side: short replies may arrive as 1 chunk.
 - Thinking is model-driven (`reasoning_content`): GLM emits it, other models may not.
+- Auth opt-in: `FORMY_TOKEN` guards `/api/*` (header or `?token=`, SSE uses query);
+  `FORMY_HOST` defaults loopback, non-loopback bind without token refuses to start.
+- MCP: stdio JSON-RPC client, `.mcp.json` (git-ignored) + `.mcp.example.json`.
 - User has ADHD → keep reports short, tables over prose.
 
 ## Suggested next steps
 - Background review (post-turn learning into memory/skills) — last big Hermes gap.
-- Real MCP server config to make `mcp_*` tools real.
-- Auth/token if server ever binds beyond localhost.
 - `cron` pause/resume verbs (only lifecycle gap vs Hermes `cronjob`).
 - `/skin` + `/theme` slash commands (picker exists in titlebar).
 - Approval cards allow-once/session/always (deny-only on web today).

@@ -486,11 +486,18 @@ function closeToolGroup(){if(window._toolGroup)window._toolGroup.dataset.done='1
 })();
 function headAttrs(head){head.setAttribute('tabindex','0');head.setAttribute('role','button');}
 
+// ---------- auth token (only needed when server FORMY_TOKEN is set) ----------
+function apiToken(){try{return localStorage.getItem('formy.token')||'';}catch(e){return '';}}
+function apiUrl(p){let t=apiToken();return t?(p+(p.includes('?')?'&':'?')+'token='+encodeURIComponent(t)):p;}
+function askToken(){let t=prompt('Server requires a token (FORMY_TOKEN). Enter it to save for this browser:');if(t&&t.trim()){try{localStorage.setItem('formy.token',t.trim());}catch(e){}return true;}return false;}
+
 // ---------- init / chat (same /api contract) ----------
 async function init(){
  loadStore();
  try{
-  let m=await (await fetch('/api/models')).json();
+  let _mr=await fetch(apiUrl('/api/models'));
+  if(_mr.status===401){if(askToken())return init();throw new Error('unauthorized (server FORMY_TOKEN is set)');}
+  let m=await _mr.json();
   allModels=m.models||[];
   selectedModel=cur().model&&allModels.includes(cur().model)?cur().model:(m.default||allModels[0]||'');
   cur().model=selectedModel;
@@ -508,7 +515,7 @@ async function init(){
   });
   document.getElementById('status').textContent=m.has_key?'key: set':'key: MISSING (check .env MAXPLUS_API_KEY)';
   document.getElementById('status').classList.toggle('live',!!m.has_key);
-  let s=await (await fetch('/api/system')).json();
+  let s=await (await fetch(apiUrl('/api/system'))).json();
   document.getElementById('sys').value=s.system||'';
   renderSessions();rerenderMsgs();
  }catch(e){
@@ -517,7 +524,7 @@ async function init(){
  }
 }
 async function saveSys(){
- await fetch('/api/system',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:document.getElementById('sys').value})});
+ await fetch(apiUrl('/api/system'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:document.getElementById('sys').value})});
  alert('saved to system_prompt.md');
 }
 // ---------- lightweight markdown (v2 markdown.css treatment, no deps) ----------
@@ -615,7 +622,7 @@ async function send(){
  if(isRunning&&currentRid){
   addMsg('user',msg);echoed=true;
   try{
-   let s=await (await fetch('/api/steer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
+    let s=await (await fetch(apiUrl('/api/steer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
    if(s.ok){steerBuffer.push(msg);return;}
    // run finished between keystroke and POST: fall through to normal new chat below
    isRunning=false;currentRid=null;
@@ -704,7 +711,7 @@ async function send(){
     let es=null;
     function stopLive(){try{if(es)es.close();}catch(_){}es=null;}
     try{
-     es=new EventSource('/api/event?run='+encodeURIComponent(rid));
+     es=new EventSource(apiUrl('/api/event?run='+encodeURIComponent(rid)));
      es.onmessage=e=>{try{let log=JSON.parse(e.data);renderTool(log);liveShown++;}catch(_){}};
      es.addEventListener('stream',e=>{try{liveAppend(JSON.parse(e.data).t||'');}catch(_){}});
      es.addEventListener('stream_full',e=>{try{let s=curSeg();s.text=JSON.parse(e.data).t||'';s.streaming=true;if(document.contains(s.el))s.el.textContent=s.text+'▍';scrollIfPinned();}catch(_){}});
@@ -718,8 +725,12 @@ async function send(){
    // P0-1: run+item_id is the idempotency key — network retry with same rid never forks a second LLM loop
    let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
    console.log('[send]',model,msg.slice(0,120));
-   let resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+   let resp=await fetch(apiUrl('/api/chat'),{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload)});
+   if(resp.status===401){stopLive();setRunning(false);isRunning=false;currentRid=null;closeToolGroup();finishLive(null);
+    if(askToken())addMsg('assistant','Token saved — resend your message.');
+    else addMsg('assistant','ERROR: unauthorized — server FORMY_TOKEN is set.');
+    return;}
    if(resp.status===409){let t=await resp.text();throw new Error('already running (retry with same id is deduped): '+t.slice(0,200));}
    if(!resp.ok){let t=await resp.text();throw new Error('HTTP '+resp.status+': '+t.slice(0,300));}
     let r=await resp.json();
@@ -749,7 +760,7 @@ async function send(){
 // v2 composer keys: Enter=send, Shift+Enter=newline, Esc=interrupt-while-running else blur
 async function interrupt(){
  if(!isRunning||!currentRid)return;
- try{await fetch('/api/interrupt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid})});}catch(e){}
+ try{await fetch(apiUrl('/api/interrupt'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid})});}catch(e){}
 }
 function autogrow(){let t=document.getElementById('in');t.style.height='auto';t.style.height=Math.min(120,t.scrollHeight)+'px';}
 document.getElementById('in').addEventListener('input',autogrow);

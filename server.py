@@ -5,6 +5,7 @@ Provider: MaxPlus AI, pool chinese-specials (OpenAI-compatible).
 Docs: https://maxplus-ai.cc/docs/api
 """
 import json
+import hmac
 import os
 import threading
 import time
@@ -48,6 +49,12 @@ if _env.exists():
 BASE_URL = os.getenv("MAXPLUS_BASE_URL", "https://api.maxplus-ai.cc/chinese-specials/v1")
 API_KEY = os.getenv("MAXPLUS_API_KEY", os.getenv("OPENCODE_API_KEY", ""))
 DEFAULT_MODEL = os.getenv("MAXPLUS_MODEL", os.getenv("OPENCODE_MODEL", "glm-5.3-flash"))
+# auth: off by default (localhost, zero friction). Set FORMY_TOKEN to require it
+# on every /api/* route — via `Authorization: Bearer <token>` or `?token=`
+# (query form exists because EventSource cannot send headers).
+FORMY_TOKEN = os.getenv("FORMY_TOKEN", "")
+# bind: loopback by default. Non-loopback bind without FORMY_TOKEN refuses to start.
+HOST = os.getenv("FORMY_HOST", "127.0.0.1")
 try:
     PORT = int(os.getenv("PORT", "8000"))
 except ValueError:
@@ -627,10 +634,21 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     return ("(max tool steps reached)", tool_logs, messages, False)
 
 
+def _authorized(handler, parsed) -> bool:
+    """True if the request may use /api/*. Open when FORMY_TOKEN is unset."""
+    if not FORMY_TOKEN:
+        return True
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), FORMY_TOKEN):
+        return True
+    q = urllib.parse.parse_qs(parsed.query or "")
+    tok = (q.get("token") or [""])[0]
+    return bool(tok) and hmac.compare_digest(tok, FORMY_TOKEN)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log(f"{self.address_string()} {self.command} {self.path} :: {fmt % args}")
-
     def send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -735,6 +753,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and not _authorized(self, parsed):
+            self.send_json({"ok": False, "error": "unauthorized (server FORMY_TOKEN is set)"}, 401)
+            return
         if parsed.path in ("/", "/index.html"):
             html = (ROOT / "index.html").read_text()
             body = html.encode()
@@ -792,6 +813,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and not _authorized(self, parsed):
+            self.send_json({"ok": False, "error": "unauthorized (server FORMY_TOKEN is set)"}, 401)
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
@@ -1029,8 +1053,14 @@ def _cron_start(interval_s: int = 30):
 if __name__ == "__main__":
     _store_init()
     _cron_start()
-    log(f"serving http://localhost:{PORT} (log: {LOG_FILE})")
+    loopback = HOST in ("127.0.0.1", "::1", "localhost")
+    if not loopback and not FORMY_TOKEN:
+        raise SystemExit(
+            f"refusing to bind {HOST} without FORMY_TOKEN "
+            "(set FORMY_TOKEN to a long random value first)")
+    log(f"serving http://{HOST}:{PORT} (log: {LOG_FILE})")
     log(f"model default={DEFAULT_MODEL} key={'set' if API_KEY else 'MISSING export MAXPLUS_API_KEY=ccsk-...'}")
+    log(f"auth={'token required' if FORMY_TOKEN else 'off, loopback only'}")
     # open chatbot automatically (set NO_BROWSER=1 to skip)
     if os.getenv("NO_BROWSER", "") not in ("1", "true"):
         try:
@@ -1038,4 +1068,4 @@ if __name__ == "__main__":
             webbrowser.open(f"http://localhost:{PORT}")
         except Exception:
             pass
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

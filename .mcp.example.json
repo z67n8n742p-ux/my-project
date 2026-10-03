@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to .mcp.json and fill in. .mcp.json is git-ignored (may hold secrets in env).",
+  "servers": {
+    "example-stdio": {
+      "command": "python3",
+      "args": ["/path/to/mcp-server.py"],
+      "env": {},
+      "timeout": 30
+    }
+  }
+}

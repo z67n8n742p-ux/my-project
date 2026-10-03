@@ -7,7 +7,7 @@ Tools: bash(=v2 shell), process (bg job manager), edit, write, read, extract (pd
         apply_patch(=v2 patch), skill, skill_manage, todowrite (local extra),
        cron (scheduled jobs), memory, session_search, webfetch, websearch, question, subagent,
        models(=v2 opencode_models),
-       mcp_list_resources, mcp_read_resource (stubs: no MCP servers configured)
+        mcp_list_resources, mcp_read_resource (stdio MCP client, config: .mcp.json)
 Registry: get_tool_definitions() + TOOLSETS + check_fn (Hermes pattern).
 Backends: bash routes via backends.py (local/docker/ssh).
 Approval: bash gated by approval.py DANGEROUS_PATTERNS.
@@ -1404,17 +1404,163 @@ def models(query: str = "", limit: int = 20) -> str:
         return f"models error: {e}"
 
 
-# ---------- mcp stubs (v2 parity: no MCP servers in this project) ----------
+# ---------- mcp client (stdio JSON-RPC; config: .mcp.json, see .mcp.example.json) ----------
+MCP_FILE = Path(__file__).parent / ".mcp.json"
+
+
+def _mcp_config():
+    """Load .mcp.json servers dict. Returns {} when missing/invalid (never raises)."""
+    try:
+        data = json.loads(MCP_FILE.read_text())
+        servers = (data.get("servers") or {})
+        return servers if isinstance(servers, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mcp_rpc(server_name: str, method: str, params: dict):
+    """One-shot MCP stdio call: spawn, initialize, request, terminate.
+
+    Returns (ok, result-or-error-string). Never raises.
+    """
+    import queue as _queue
+    servers = _mcp_config()
+    if server_name not in servers:
+        known = ", ".join(sorted(servers)) or "(none)"
+        return (False, f"unknown MCP server {server_name!r}. Known: {known}. "
+                       "Configure in .mcp.json (see .mcp.example.json).")
+    cfg = servers[server_name] or {}
+    cmd = cfg.get("command", "")
+    if not cmd:
+        return (False, f"MCP server {server_name!r} has no command in .mcp.json.")
+    args = [cmd] + [str(a) for a in (cfg.get("args") or [])]
+    try:
+        timeout = float(cfg.get("timeout", os.getenv("MCP_TIMEOUT", "30")))
+    except ValueError:
+        timeout = 30.0
+    timeout = max(5.0, min(300.0, timeout))
+    env = dict(os.environ)
+    for k, v in (cfg.get("env") or {}).items():
+        env[str(k)] = str(v)
+    try:
+        proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1,
+            cwd=cfg.get("cwd") or None)
+    except Exception as e:
+        return (False, f"MCP server {server_name!r} failed to start ({args[0]}): {e}")
+    out_q: _queue.Queue = _queue.Queue()
+    stop = threading.Event()
+
+    def _reader():
+        try:
+            for line in proc.stdout:
+                if stop.is_set():
+                    break
+                line = line.strip()
+                if line:
+                    out_q.put(line)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+    def _send(obj):
+        try:
+            proc.stdin.write(json.dumps(obj) + "\n")
+            proc.stdin.flush()
+            return True
+        except Exception:
+            return False
+
+    def _wait(req_id, deadline):
+        import time as _t
+        while _t.time() < deadline:
+            try:
+                line = out_q.get(timeout=max(0.1, deadline - _t.time()))
+            except Exception:
+                break
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == req_id:
+                if "error" in msg and msg["error"]:
+                    err = msg["error"]
+                    return (False, f"MCP error: {err.get('message', err) if isinstance(err, dict) else err}")
+                return (True, msg.get("result"))
+        return (False, f"MCP {method}: timed out after {timeout:.0f}s waiting for {server_name!r}.")
+
+    import time as _time
+    try:
+        end = _time.time() + timeout
+        if not _send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                      "params": {"protocolVersion": "2024-11-05",
+                                 "capabilities": {},
+                                 "clientInfo": {"name": "formyproject", "version": "1.0"}}}):
+            return (False, f"MCP {server_name!r}: stdin closed during initialize.")
+        ok, res = _wait(1, end)
+        if not ok:
+            return (False, res)
+        _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if not _send({"jsonrpc": "2.0", "id": 2, "method": method, "params": params or {}}):
+            return (False, f"MCP {server_name!r}: stdin closed during {method}.")
+        return _wait(2, end)
+    finally:
+        stop.set()
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
 def mcp_list_resources(server: str = "") -> str:
-    """List MCP resources. Stub: this project has no MCP servers configured."""
-    return ("mcp_list_resources: no MCP servers configured in this project. "
-            "Add an MCP server config first; until then use read/webfetch/grep.")
+    """List resources on a configured MCP server (.mcp.json)."""
+    if not server:
+        servers = _mcp_config()
+        if not servers:
+            return ("mcp_list_resources: no MCP servers configured. "
+                    "Copy .mcp.example.json to .mcp.json and add a server; "
+                    "until then use read/webfetch/grep.")
+        return "mcp servers:\n" + "\n".join(f"- {name}" for name in sorted(servers))
+    ok, res = _mcp_rpc(server, "resources/list", {})
+    if not ok:
+        return f"mcp_list_resources: {res}"
+    items = (res or {}).get("resources") or []
+    if not items:
+        return f"mcp_list_resources: server {server!r} has no resources."
+    lines = []
+    for r in items[:100]:
+        lines.append(f"- {r.get('uri', '?')} — {r.get('name', '')} "
+                     f"({r.get('mimeType', 'unknown type')})".rstrip())
+    return f"mcp resources on {server!r}:\n" + "\n".join(lines)
 
 
 def mcp_read_resource(server: str = "", uri: str = "") -> str:
-    """Read one MCP resource. Stub: this project has no MCP servers configured."""
-    return ("mcp_read_resource: no MCP servers configured in this project. "
-            f"(server={server} uri={uri})")
+    """Read one MCP resource by URI (truncated at 12k chars)."""
+    if not server or not uri:
+        return "mcp_read_resource: need server + uri."
+    ok, res = _mcp_rpc(server, "resources/read", {"uri": uri})
+    if not ok:
+        return f"mcp_read_resource: {res}"
+    contents = (res or {}).get("contents") or []
+    if not contents:
+        return f"mcp_read_resource: {uri!r} returned no content."
+    out = []
+    for c in contents[:5]:
+        text = c.get("text")
+        if text is None and c.get("blob"):
+            text = f"<base64 blob, {len(c['blob'])} chars>"
+        text = str(text or "")
+        if len(text) > 12000:
+            text = text[:12000] + f"\n…(truncated, {len(text)} total)"
+        out.append(f"--- {c.get('uri', uri)} [{c.get('mimeType', '?')}] ---\n{text}")
+    return "\n\n".join(out)
 
 
 # ---------- compaction (opencode v2 §7, minimal rolling summary) ----------
@@ -1589,8 +1735,8 @@ TOOLS_SPECS = [
     {"type": "function", "function": {"name": "question", "description": "Ask user a question via CLI.", "parameters": {"type": "object", "properties": {"questions": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "subagent", "description": "Spawn a child agent with fresh context for independent work (max 6 steps, no recursion).", "parameters": {"type": "object", "properties": {"description": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["description", "prompt"]}}},
     {"type": "function", "function": {"name": "models", "description": "List models available to your MaxPlus key, optionally filtered by query.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}}}},
-    {"type": "function", "function": {"name": "mcp_list_resources", "description": "List MCP server resources (stub: no MCP servers configured).", "parameters": {"type": "object", "properties": {"server": {"type": "string"}}}}},
-    {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource (stub: no MCP servers configured).", "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}}, "required": ["server", "uri"]}}},
+        {"type": "function", "function": {"name": "mcp_list_resources", "description": "List MCP server resources (config: .mcp.json; empty server arg lists servers).", "parameters": {"type": "object", "properties": {"server": {"type": "string"}}}}},
+        {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource by URI.", "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}}, "required": ["server", "uri"]}}},
 ]
 
 

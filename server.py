@@ -19,7 +19,7 @@ except ImportError:
     print("run: pip install -r requirements.txt")
     raise
 
-from tools import TOOLS_SPECS, SUMMARY_SYSTEM, compact_messages, execute_tool
+from tools import TOOLS_SPECS, SUMMARY_SYSTEM, compact_messages, execute_tool, run_tool_calls
 
 ROOT = Path(__file__).parent
 LOG_FILE = ROOT / "server.log"
@@ -131,6 +131,40 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def _model_chain(primary):
+    """Fallback chain (Hermes fallback_providers pattern, minimal).
+
+    FORMY_FALLBACK_MODELS="model-a,model-b" — tried in order when the current
+    model fails (429/5xx after retries, or 401/403/404/unknown-model).
+    Primary always first, deduped. Empty env = primary only (old behavior).
+    """
+    extra = [m.strip() for m in os.getenv("FORMY_FALLBACK_MODELS", "").split(",") if m.strip()]
+    chain = [primary] + [m for m in extra if m != primary]
+    return chain
+
+
+def _chat_create_with_fallback(client, primary, messages, tools=None, run_id=None, live_logs=None):
+    """Try each model in _model_chain; return (response, used_model). Raises last error."""
+    last = None
+    chain = _model_chain(primary)
+    for i, model in enumerate(chain):
+        try:
+            return _chat_create_with_retry(client, model, messages, tools, run_id=run_id, live_logs=live_logs), model
+        except Exception as e:
+            last = e
+            if i >= len(chain) - 1:
+                raise
+            nxt = chain[i + 1]
+            log(f"/api/chat fallback.switch run={run_id} {model} -> {nxt} err={str(e)[:150]}")
+            if live_logs is not None:
+                with RUNS_LOCK:
+                    live_logs.append({"tool": "fallback", "args": {"from": model, "to": nxt},
+                                      "result": f"switched model after error: {str(e)[:300]}"})
+                    if run_id and run_id in RUNS:
+                        RUNS[run_id]["ts"] = time.time()
+    raise last
+
+
 def _chat_create_with_retry(client, model, messages, tools=None, run_id=None, live_logs=None):
     """P0-3: initial request + max 4 retries, jittered exp backoff 1/2/4/8s. Logs retry.scheduled."""
     import random
@@ -177,6 +211,21 @@ def _save_turn(sid: str, user_msg: str, reply: str, model: str, tool_logs) -> No
                                 "tools": [t.get("tool") for t in (tool_logs or [])], "ts": time.time()}) + "\n")
     except Exception as e:
         log(f"session save error {sid}: {e}")
+    # Glow-up: mirror into SQLite messages for session_search. Best-effort —
+    # jsonl above is source of truth; DB failure must never break the turn.
+    try:
+        with DB_LOCK:
+            c = _db()
+            ts2 = time.time()
+            c.execute("INSERT INTO messages(session_id,role,content,timestamp) VALUES(?,?,?,?)",
+                      (sid, "user", user_msg, ts2))
+            tool_names = ",".join(t.get("tool", "") for t in (tool_logs or []))[:500]
+            c.execute("INSERT INTO messages(session_id,role,content,tool_name,timestamp) VALUES(?,?,?,?,?)",
+                      (sid, "assistant", reply, tool_names, time.time()))
+            c.commit()
+            c.close()
+    except Exception as e:
+        log(f"messages mirror error {sid}: {e}")
 
 
 STORE_DB = SESSIONS_DIR / "store.db"
@@ -192,6 +241,23 @@ def _db():
     c.execute("""CREATE TABLE IF NOT EXISTS runs(
       run_id TEXT PRIMARY KEY, reply TEXT, tools TEXT, done INTEGER,
       status TEXT, ts REAL)""")
+    # Glow-up: message history for session_search (Hermes messages pattern, minimal).
+    # Additive only — runs table untouched. FTS5 optional (LIKE fallback in tool).
+    c.execute("""CREATE TABLE IF NOT EXISTS messages(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+      role TEXT NOT NULL, content TEXT, tool_name TEXT, timestamp REAL NOT NULL)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp)")
+    try:
+        c.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+          content, tool_name, content='messages', content_rowid='id')""")
+        c.execute("""CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+          INSERT INTO messages_fts(rowid, content, tool_name)
+          VALUES (new.id, new.content, new.tool_name); END""")
+        c.execute("""CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, content, tool_name)
+          VALUES ('delete', old.id, old.content, old.tool_name); END""")
+    except Exception:
+        pass  # FTS5 missing on this build — session_search falls back to LIKE
     return c
 
 
@@ -345,11 +411,12 @@ def _maybe_compact(client, model, messages, run_id=None, live_logs=None, tool_lo
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
+    cur_model = model  # fallback may switch mid-run; rest of run stays on working model
     for _ in range(max_steps):
         if _is_interrupted(run_id):
             return ("(interrupted by user)", tool_logs, messages, True)
-        _maybe_compact(client, model, messages, run_id, live_logs, tool_logs)
-        resp = _chat_create_with_retry(client, model, messages, SERVER_TOOLS_SPECS, run_id=run_id, live_logs=live_logs)
+        _maybe_compact(client, cur_model, messages, run_id, live_logs, tool_logs)
+        resp, cur_model = _chat_create_with_fallback(client, cur_model, messages, SERVER_TOOLS_SPECS, run_id=run_id, live_logs=live_logs)
         msg = resp.choices[0].message
         m = {"role": "assistant", "content": msg.content or ""}
         if getattr(msg, "tool_calls", None):
@@ -364,6 +431,11 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
             if _drain_steer(run_id, messages):
                 continue
             return (msg.content or "(empty)", tool_logs, messages, False)
+        # Parse args sequentially (cheap), execute concurrently (Hermes pattern).
+        # Bad JSON stays a per-call error (P0-5); question stays disabled.
+        # Responses appended in tool_calls order (providers validate sequence).
+        inline = {}
+        pending = []
         for tc in msg.tool_calls:
             name = tc.function.name
             try:
@@ -371,33 +443,26 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
             except Exception as e:
                 # P0-5: bad JSON is a per-call error, not a run abort
                 err = f"tool {name} error: invalid JSON arguments: {e}"
-                entry = {"tool": name, "args": {}, "result": err[:2000]}
-                tool_logs.append(entry)
-                if live_logs is not None:
-                    with RUNS_LOCK:
-                        live_logs.append(entry)
-                        if run_id and run_id in RUNS:
-                            RUNS[run_id]["ts"] = time.time()
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": err})
+                inline[tc.id] = ({"tool": name, "args": {}, "result": err[:2000]}, err)
                 continue
             if name == "question":
                 # never block the HTTP handler on input()
                 result = "question tool is disabled in web mode; make your best guess and continue."
-            else:
-                try:
-                    # P0-5: one bad tool must not kill sibling calls
-                    result = execute_tool(name, args)
-                except Exception as e:
-                    result = f"tool {name} error: {e}"
-            entry = {"tool": name, "args": args, "result": str(result)[:2000]}
+                inline[tc.id] = ({"tool": name, "args": args, "result": result[:2000]}, result)
+                continue
+            pending.append((tc.id, name, args))
+        for (tc_id, name, _args), (entry, result) in zip(pending, run_tool_calls(pending)):
+            # P0-4: model gets bounded preview, full text retained under .jobs/
+            inline[tc_id] = (entry, _bound_for_model(result, name, tc_id))
+        for tc in msg.tool_calls:
+            entry, content = inline[tc.id]
             tool_logs.append(entry)
             if live_logs is not None:
                 with RUNS_LOCK:
                     live_logs.append(entry)
                     if run_id and run_id in RUNS:
                         RUNS[run_id]["ts"] = time.time()
-            # P0-4: model gets bounded preview, full text retained under .jobs/
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": _bound_for_model(result, name, tc.id)})
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
         # P0-2: Safe Step Boundary — deliver steers here, before next LLM step
         _drain_steer(run_id, messages)
         if _is_interrupted(run_id):
@@ -567,6 +632,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": f"unknown model '{model}'. Valid: {', '.join(live)}"}, 400)
                 return
             system = data.get("system") or ""
+            # Glow-up: assemble SOUL + AGENTS + memory snapshot around UI text.
+            # Falls back to raw UI text if prompt.py missing — UI contract unchanged.
+            try:
+                from prompt import build_system_prompt as _build_sys
+                system = _build_sys(system)
+            except Exception:
+                pass
             history = data.get("history") or []
             user_msg = (data.get("message") or "").strip()
             if not user_msg:

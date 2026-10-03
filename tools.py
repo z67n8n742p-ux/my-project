@@ -3,9 +3,13 @@ Built-in tools ported from opencode v2 (packages/core/src/tool/plugin).
 https://github.com/anomalyco/opencode/tree/v2
 
 Tools: bash(=v2 shell), edit, write, read, grep, glob, lsp (local extra),
-       apply_patch(=v2 patch), skill, todowrite (local extra), webfetch,
-       websearch, question, subagent, models(=v2 opencode_models),
+       apply_patch(=v2 patch), skill, skill_manage, todowrite (local extra),
+       memory, session_search, webfetch, websearch, question, subagent,
+       models(=v2 opencode_models),
        mcp_list_resources, mcp_read_resource (stubs: no MCP servers configured)
+Registry: get_tool_definitions() + TOOLSETS + check_fn (Hermes pattern).
+Backends: bash routes via backends.py (local/docker/ssh).
+Approval: bash gated by approval.py DANGEROUS_PATTERNS.
 """
 import glob as _globlib
 import json
@@ -54,6 +58,17 @@ def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool 
     """Execute shell commands. Mirrors v2 `shell` (workdir/timeout/background)."""
     if not command or not command.strip():
         return "bash error: empty command"
+    # Approval gate (Hermes DANGEROUS_PATTERNS): safe cmds pass with zero overhead.
+    # Web/server never prompts (deny); CLI prompts on TTY (ask). Never raises.
+    try:
+        from approval import check as _approval_check
+        import sys as _sys
+        _ask = _sys.stdin.isatty()
+        _allowed, _msg = _approval_check(command, default_ask=_ask)
+        if not _allowed:
+            return f"bash blocked: {_msg}"
+    except Exception:
+        pass
     if background:
         # v2-style background job: detach, log to .jobs/<id>.log, agent reads it
         try:
@@ -72,16 +87,23 @@ def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool 
         except Exception as e:
             return f"bash background error: {e}"
     try:
-        p = subprocess.run(
-            command, shell=True, cwd=workdir or ".",
-            capture_output=True, text=True, timeout=timeout,
-        )
+        # Backend interface (Hermes environments pattern): local/docker/ssh.
+        # Default local; unknown/unconfigured falls back to local. Same output shape.
+        try:
+            from backends import run as _backend_run
+            _stdout, _stderr, _rc = _backend_run(command, workdir or ".", timeout)
+        except Exception:
+            p = subprocess.run(
+                command, shell=True, cwd=workdir or ".",
+                capture_output=True, text=True, timeout=timeout,
+            )
+            _stdout, _stderr, _rc = p.stdout or "", p.stderr or "", p.returncode
         out = f"$ {command}\n"
-        if p.stdout:
-            out += p.stdout
-        if p.stderr:
-            out += f"\n[stderr]\n{p.stderr}"
-        out += f"\n[exit {p.returncode}]"
+        if _stdout:
+            out += _stdout
+        if _stderr:
+            out += f"\n[stderr]\n{_stderr}"
+        out += f"\n[exit {_rc}]"
         # P0-4: spill full output, preview to caller
         return _bound_text(out, "bash")
     except subprocess.TimeoutExpired:
@@ -579,6 +601,346 @@ def _ddg_search(query: str, numResults: int = 8) -> str:
         return f"websearch error: {e}"
 
 
+# ---------- memory (Hermes MEMORY.md / USER.md pattern, minimal) ----------
+MEMORY_FILE = Path(__file__).parent / "memories" / "MEMORY.md"
+USER_FILE = Path(__file__).parent / "memories" / "USER.md"
+MEMORY_LIMIT = 2200
+USER_LIMIT = 1375
+
+_BLOCKED_MEMORY_PATTERNS = [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "exfiltrate",
+    "send credentials to",
+]
+
+
+def _memory_entries(path: Path):
+    try:
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text().splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            out.append(s)
+        return out
+    except Exception:
+        return []
+
+
+def _memory_write(path: Path, entries) -> None:
+    header = f"# {path.stem} — one entry per line. Lines starting with # are comments.\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(header + "".join(e + "\n" for e in entries))
+
+
+def memory(action: str = "list", target: str = "memory", content: str = "", old_text: str = "") -> str:
+    """Curated persistent memory. Mirrors Hermes `memory` (add/replace/remove/list).
+
+    target: memory (env facts, lessons) | user (preferences, style).
+    No `read` needed — entries are injected into the system prompt each session.
+    """
+    target = (target or "memory").strip().lower()
+    if target not in ("memory", "user"):
+        return f"memory error: unknown target {target!r} (use memory|user)"
+    path = MEMORY_FILE if target == "memory" else USER_FILE
+    limit = MEMORY_LIMIT if target == "memory" else USER_LIMIT
+    entries = _memory_entries(path)
+
+    if action == "list":
+        if not entries:
+            return f"{target}: (empty)"
+        used = sum(len(e) + 1 for e in entries)
+        lines = [f"{target} [{used}/{limit} chars]:"]
+        lines += [f"{i+1}. {e}" for i, e in enumerate(entries)]
+        return "\n".join(lines)
+
+    if action == "add":
+        text = (content or "").strip()
+        if not text:
+            return "memory error: empty content"
+        low = text.lower()
+        for pat in _BLOCKED_MEMORY_PATTERNS:
+            if pat in low:
+                return f"memory blocked: content matches injection pattern {pat!r}"
+        if text in entries:
+            return "memory: duplicate entry, not added"
+        used = sum(len(e) + 1 for e in entries)
+        if used + len(text) + 1 > limit:
+            return (f"memory full ({used}/{limit} chars). Adding {len(text)} chars would exceed the limit. "
+                    f"Consolidate first: use action=replace to merge entries or action=remove for stale ones.")
+        entries.append(text)
+        try:
+            _memory_write(path, entries)
+        except Exception as e:
+            return f"memory write error: {e}"
+        return f"memory saved to {target} ({len(entries)} entries)"
+
+    if action == "remove":
+        key = (old_text or content or "").strip()
+        if not key:
+            return "memory error: provide old_text (unique substring) to remove"
+        hits = [e for e in entries if key in e]
+        if not hits:
+            return "memory remove: no match"
+        if len(hits) > 1:
+            return f"memory remove: {len(hits)} matches, be more specific"
+        entries.remove(hits[0])
+        try:
+            _memory_write(path, entries)
+        except Exception as e:
+            return f"memory write error: {e}"
+        return f"memory removed from {target}: {hits[0][:120]}"
+
+    if action == "replace":
+        key = (old_text or "").strip()
+        text = (content or "").strip()
+        if not key or not text:
+            return "memory error: replace needs old_text (match) + content (new entry)"
+        hits = [e for e in entries if key in e]
+        if not hits:
+            return "memory replace: no match"
+        if len(hits) > 1:
+            return f"memory replace: {len(hits)} matches, be more specific"
+        trial = [text if e == hits[0] else e for e in entries]
+        used = sum(len(e) + 1 for e in trial)
+        if used > limit:
+            return f"memory full ({used}/{limit} chars after replace). Shorten content first."
+        entries = trial
+        try:
+            _memory_write(path, entries)
+        except Exception as e:
+            return f"memory write error: {e}"
+        return f"memory replaced in {target}"
+    return f"memory: unknown action {action} (use list|add|replace|remove)"
+
+
+# ---------- session_search (Hermes FTS5 recall pattern, minimal) ----------
+def session_search(query: str = "", limit: int = 10, role_filter: str = "") -> str:
+    """Search past sessions (SQLite FTS5, LIKE fallback, then jsonl). Read-only, never raises."""
+    q = (query or "").strip()
+    if not q:
+        return "session_search error: empty query"
+    cap = max(1, min(50, int(limit or 10)))
+    roles = [r.strip() for r in (role_filter or "").split(",") if r.strip()]
+    sessions_dir = Path(__file__).parent / ".sessions"
+    db_path = sessions_dir / "store.db"
+    # 1) SQLite messages table (added by server upgrade; may not exist yet)
+    try:
+        if db_path.exists():
+            import sqlite3
+            c = sqlite3.connect(str(db_path), timeout=5)
+            try:
+                cols = [r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()]
+            except Exception:
+                cols = []
+            if cols:
+                rows = []
+                try:
+                    # FTS5 path
+                    fts = [r[0] for r in c.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchall()]
+                    if fts:
+                        sql = ("SELECT m.session_id, m.role, snippet(messages_fts, 0, '>>>', '<<<', '...', 20), m.timestamp "
+                               "FROM messages_fts f JOIN messages m ON m.id = f.rowid "
+                               "WHERE messages_fts MATCH ?")
+                        params = [q]
+                        if roles:
+                            sql += " AND m.role IN (%s)" % ",".join("?" * len(roles))
+                            params += roles
+                        sql += " LIMIT ?"
+                        params.append(cap)
+                        rows = c.execute(sql, params).fetchall()
+                    else:
+                        raise RuntimeError("no fts")
+                except Exception:
+                    # LIKE fallback
+                    like = f"%{q}%"
+                    sql = "SELECT session_id, role, substr(content,1,300), timestamp FROM messages WHERE content LIKE ?"
+                    params = [like]
+                    if roles:
+                        sql += " AND role IN (%s)" % ",".join("?" * len(roles))
+                        params += roles
+                    sql += " ORDER BY timestamp DESC LIMIT ?"
+                    params.append(cap)
+                    rows = c.execute(sql, params).fetchall()
+                if rows:
+                    out = [f"session_search: {len(rows)} hit(s) for {q!r}:"]
+                    for sid, role, snip, ts in rows:
+                        out.append(f"- [{sid}] {role}: {str(snip or '')[:300]}")
+                    return "\n".join(out)[:10000]
+            c.close()
+    except Exception:
+        pass
+    # 2) jsonl fallback (pre-upgrade sessions)
+    try:
+        hits = []
+        if sessions_dir.exists():
+            for p in sorted(sessions_dir.glob("*.jsonl")):
+                try:
+                    for line in p.read_text().splitlines():
+                        if q.lower() in line.lower():
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            if roles and obj.get("role") not in roles:
+                                continue
+                            hits.append(f"- [{p.stem}] {obj.get('role')}: {str(obj.get('content') or '')[:200]}")
+                            if len(hits) >= cap:
+                                break
+                except Exception:
+                    continue
+                if len(hits) >= cap:
+                    break
+        if hits:
+            return f"session_search (jsonl fallback): {len(hits)} hit(s) for {q!r}:\n" + "\n".join(hits)[:10000]
+    except Exception:
+        pass
+    return f"session_search: no hits for {q!r}"
+
+
+# ---------- skill_manage (Hermes agent-writable skills pattern, minimal) ----------
+# skills/<name>/SKILL.md — procedural memory. Agent saves reusable workflows here.
+# skill() reads; skill_manage() writes. Name sanitized, traversal blocked, 24k cap.
+SKILLS_DIR = Path(__file__).parent / "skills"
+SKILL_BODY_CAP = 24000
+
+
+def _skill_name_ok(name: str) -> bool:
+    n = (name or "").strip()
+    if not n or len(n) > 64:
+        return False
+    return all(c.isalnum() or c in ("-", "_") for c in n)
+
+
+def skill_manage(action: str = "list", name: str = "", content: str = "",
+                 old_string: str = "", new_string: str = "") -> str:
+    """Create/patch/delete agent skills. Mirrors Hermes `skill_manage` (no hub, local only).
+
+    action: list|view|create|patch|delete
+    - create: full SKILL.md body in content (preferred over patch for new skills).
+    - patch: targeted old_string -> new_string (preferred for updates, token-efficient).
+    - patch with content + empty old_string: full rewrite.
+    """
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    if action == "list":
+        try:
+            names = sorted(p.name for p in SKILLS_DIR.iterdir()
+                           if p.is_dir() and (p / "SKILL.md").exists())
+        except Exception as e:
+            return f"skill_manage list error: {e}"
+        return "skills:\n" + "\n".join(f"- {n}" for n in names) if names else "skills: (none yet — create one with action=create)"
+    if action == "view":
+        if not _skill_name_ok(name):
+            return "skill_manage error: bad name (alnum, -, _ only)"
+        p = SKILLS_DIR / name.strip() / "SKILL.md"
+        if not p.exists():
+            return f"skill_manage: not found: {name}"
+        try:
+            return f"[skill:{name}]\n" + p.read_text()[:SKILL_BODY_CAP]
+        except Exception as e:
+            return f"skill_manage read error: {e}"
+    if action in ("create", "patch", "delete"):
+        if not _skill_name_ok(name):
+            return "skill_manage error: bad name (alnum, -, _ only, max 64)"
+        d = SKILLS_DIR / name.strip()
+        # traversal guard: skill dir must resolve to a direct child of skills/
+        try:
+            ok = (d.resolve().parent == SKILLS_DIR.resolve())
+        except Exception:
+            ok = False
+        if not ok:
+            return "skill_manage blocked: path traversal"
+        if action == "create":
+            body = (content or "").strip()
+            if not body:
+                return "skill_manage error: create needs content (full SKILL.md body)"
+            if len(body) > SKILL_BODY_CAP:
+                return f"skill_manage error: body {len(body)} chars > cap {SKILL_BODY_CAP}"
+            if (d / "SKILL.md").exists():
+                return f"skill_manage: {name} exists — use action=patch to update"
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "SKILL.md").write_text(body + "\n")
+                return f"skill created: skills/{name}/SKILL.md ({len(body)} chars)"
+            except Exception as e:
+                return f"skill_manage create error: {e}"
+        if action == "delete":
+            p = d / "SKILL.md"
+            if not p.exists():
+                return f"skill_manage: not found: {name}"
+            try:
+                p.unlink()
+                try:
+                    d.rmdir()  # only if empty (keeps references/ etc.)
+                except OSError:
+                    pass
+                return f"skill deleted: {name}"
+            except Exception as e:
+                return f"skill_manage delete error: {e}"
+        # patch
+        p = d / "SKILL.md"
+        if not p.exists():
+            return f"skill_manage: not found: {name} — use action=create first"
+        try:
+            text = p.read_text()
+        except Exception as e:
+            return f"skill_manage read error: {e}"
+        if old_string:
+            if old_string not in text:
+                return "skill_manage error: old_string not found"
+            if text.count(old_string) > 1:
+                return "skill_manage error: old_string matches multiple times, add context"
+            text = text.replace(old_string, new_string, 1)
+        elif content:
+            if len(content) > SKILL_BODY_CAP:
+                return f"skill_manage error: body {len(content)} chars > cap {SKILL_BODY_CAP}"
+            text = content
+        else:
+            return "skill_manage error: patch needs old_string+new_string or content (full rewrite)"
+        try:
+            p.write_text(text if text.endswith("\n") else text + "\n")
+            return f"skill patched: {name} ({len(text)} chars)"
+        except Exception as e:
+            return f"skill_manage write error: {e}"
+    return f"skill_manage: unknown action {action} (use list|view|create|patch|delete)"
+
+
+# ---------- parallel runner (Hermes ThreadPoolExecutor pattern, minimal) ----------
+def run_tool_calls(calls):
+    """Execute pre-parsed [(tc_id, name, args)] concurrently, order-restored.
+
+    Returns [(entry, result_str)] in input order. Single call runs inline
+    (no thread overhead). Never raises — per-call errors become result strings.
+    """
+    if not calls:
+        return []
+    if len(calls) == 1:
+        tc_id, name, args = calls[0]
+        try:
+            result = execute_tool(name, args)
+        except Exception as e:
+            result = f"tool {name} error: {e}"
+        result = str(result)
+        return [({"tool": name, "args": args, "result": result[:2000]}, result)]
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(item):
+        tc_id, name, args = item
+        try:
+            result = execute_tool(name, args)
+        except Exception as e:
+            result = f"tool {name} error: {e}"
+        result = str(result)
+        return {"tool": name, "args": args, "result": result[:2000]}, result
+
+    with ThreadPoolExecutor(max_workers=min(4, len(calls))) as ex:
+        return list(ex.map(_one, calls))
+
+
 # ---------- question ----------
 def question(questions: str = "") -> str:
     """Ask user questions via CLI. Mirrors opencode `question` tool.
@@ -819,8 +1181,18 @@ def execute_tool(name: str, args: dict) -> str:
             return apply_patch(args.get("patchText", ""))
         if name == "skill":
             return skill(args.get("name", ""), args.get("path", ""), args.get("id", ""))
+        if name == "skill_manage":
+            return skill_manage(args.get("action", "list"), args.get("name", ""),
+                                args.get("content", ""), args.get("old_string", ""),
+                                args.get("new_string", ""))
         if name == "todowrite":
             return todowrite(args.get("action", "list"), args.get("todos", ""))
+        if name == "memory":
+            return memory(args.get("action", "list"), args.get("target", "memory"),
+                          args.get("content", ""), args.get("old_text", ""))
+        if name == "session_search":
+            return session_search(args.get("query", ""), int(args.get("limit", 10)),
+                                  args.get("role_filter", ""))
         if name == "webfetch":
             return webfetch(args.get("url", ""), args.get("format", "markdown"), int(args.get("timeout", 30)))
         if name == "websearch":
@@ -853,7 +1225,10 @@ TOOLS_SPECS = [
     {"type": "function", "function": {"name": "lsp", "description": "Code intelligence (fallback grep-based). ops: workspaceSymbol, documentSymbol, goToDefinition, findReferences, hover.", "parameters": {"type": "object", "properties": {"operation": {"type": "string"}, "file": {"type": "string"}, "line": {"type": "integer"}, "col": {"type": "integer"}, "query": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "apply_patch", "description": "Apply *** Add File / Update File / Delete File / Move to patches.", "parameters": {"type": "object", "properties": {"patchText": {"type": "string"}}, "required": ["patchText"]}}},
     {"type": "function", "function": {"name": "skill", "description": "Load a SKILL.md file by id or name.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "path": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "skill_manage", "description": "Create/patch/delete agent skills (procedural memory). action=list|view|create|patch|delete. Prefer patch for updates.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "name": {"type": "string"}, "content": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "todowrite", "description": "Manage todos. action=list|set|add|done|clear.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "todos": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "memory", "description": "Curated persistent memory. action=list|add|replace|remove. target=memory|user.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "target": {"type": "string"}, "content": {"type": "string"}, "old_text": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "session_search", "description": "Search past sessions (FTS5, no LLM cost). Returns snippets with session ids.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, "role_filter": {"type": "string"}}}, "required": ["query"]}},
     {"type": "function", "function": {"name": "webfetch", "description": "Fetch URL content (text/markdown/html).", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "format": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["url"]}}},
     {"type": "function", "function": {"name": "websearch", "description": "Search web (Exa with highlights, DuckDuckGo fallback).", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "numResults": {"type": "integer"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "question", "description": "Ask user a question via CLI.", "parameters": {"type": "object", "properties": {"questions": {"type": "string"}}}}},
@@ -862,3 +1237,45 @@ TOOLS_SPECS = [
     {"type": "function", "function": {"name": "mcp_list_resources", "description": "List MCP server resources (stub: no MCP servers configured).", "parameters": {"type": "object", "properties": {"server": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource (stub: no MCP servers configured).", "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}}, "required": ["server", "uri"]}}},
 ]
+
+
+# ---------- registry shim (Hermes tools/registry.py pattern, minimal) ----------
+# TOOLS_SPECS above stays the source of truth (zero migration risk).
+# This layer adds Hermes-style availability gating + toolset filtering on top.
+def _tool_available(name: str) -> bool:
+    """check_fn per tool. Conservative: everything on except risky/web-blocked cases.
+
+    - question: CLI-only (server strips it already; keep parity here too).
+    - websearch/models: always listed; handlers fail honestly without keys.
+    """
+    if name == "question" and os.getenv("FORMY_NO_QUESTION"):
+        return False
+    return True
+
+
+TOOLSETS = {
+    "files": ["read", "write", "edit", "apply_patch", "glob", "grep"],
+    "shell": ["bash"],
+    "search": ["grep", "glob", "lsp", "session_search", "webfetch", "websearch"],
+    "agent": ["skill", "skill_manage", "todowrite", "memory", "subagent", "question", "models"],
+    "mcp": ["mcp_list_resources", "mcp_read_resource"],
+    "all": [t["function"]["name"] for t in TOOLS_SPECS],
+}
+
+
+def get_tool_definitions(enabled_toolsets=None, disabled_toolsets=None, exclude=None):
+    """Hermes get_tool_definitions() equivalent. Returns filtered TOOLS_SPECS copy."""
+    names = set(t["function"]["name"] for t in TOOLS_SPECS)
+    if enabled_toolsets:
+        keep = set()
+        for ts in enabled_toolsets:
+            keep.update(TOOLSETS.get(ts, [ts]))
+        names &= keep
+    if disabled_toolsets:
+        drop = set()
+        for ts in disabled_toolsets:
+            drop.update(TOOLSETS.get(ts, [ts]))
+        names -= drop
+    if exclude:
+        names -= set(exclude)
+    return [t for t in TOOLS_SPECS if t["function"]["name"] in names and _tool_available(t["function"]["name"])]

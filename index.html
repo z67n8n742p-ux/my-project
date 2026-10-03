@@ -10,7 +10,7 @@
  --border:#2a2e38;--border-strong:#333a48;
  --hover:#2b3342;--accent:#2b6cb0;--accent-text:#7fd07f;
  --error:#e06c75;--diff-add:#1d3a24;--diff-del:#3d2226;
- --link:#9dbefe;--code-bg:rgba(230,230,230,.08);
+  --link:#9dbefe;--code-bg:rgba(230,230,230,.08);--kw:#c792ea;
  --sans:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
  color-scheme:dark;
@@ -22,7 +22,7 @@
   --border:#dfe3ea;--border-strong:#c9d0dc;
   --hover:#e3e8f0;--accent:#2b6cb0;--accent-text:#1c7a3d;
   --error:#b3261e;--diff-add:#dff3e4;--diff-del:#fbe3e5;
-  --link:#2c47c8;--code-bg:rgba(20,20,20,.06);
+   --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;
   color-scheme:light;
  }
 }
@@ -119,6 +119,8 @@ h4{margin:12px 0 6px}
 /* v2 code treatment: block dark + radius + hover copy; inline pill */
 .msg pre{position:relative;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;font-family:var(--mono);font-size:13px;margin:12px 0}
 .msg pre code{font-family:inherit;background:none;padding:0}
+.msg pre .kw{color:var(--kw);font-weight:600}
+.msg pre .num{color:var(--accent-text)}
 .msg :not(pre)>code{font-family:var(--mono);font-size:12.5px;background:var(--code-bg);padding:0 4px;border-radius:4px}
 .copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
 .msg pre:hover .copybtn{opacity:1}
@@ -185,6 +187,10 @@ function exportSession(id){
  let s=sessions[id];if(!s)return;
  let out='# '+(s.title||'Untitled')+'\n\n';
  (s.history||[]).forEach(h=>{out+='## '+(h.role==='user'?'User':'Assistant')+'\n\n'+h.content+'\n\n';});
+ // session export includes tool logs (args + truncated result per call)
+ (s.tools||[]).forEach(x=>{
+  out+='### tool:'+x.tool+'\n\n```\nargs: '+JSON.stringify(x.args||{})+'\n\n'+String(x.result||'').slice(0,1000)+'\n```\n\n';
+ });
  let a=document.createElement('a');
  a.href=URL.createObjectURL(new Blob([out],{type:'text/markdown'}));
  a.download='session-'+id+'.md';a.click();
@@ -225,6 +231,7 @@ function rerenderMsgs(){
   e.appendChild(b);box.appendChild(e);
  }
  h.forEach(m=>addMsg(m.role==='user'?'user':'assistant',m.content,true));
+ (cur().tools||[]).forEach(x=>{try{renderTool(x,true);}catch(e){}});
  maybeTip();
 }
 function maybeTip(){
@@ -274,7 +281,7 @@ function familyOf(t){
  if(['bash'].includes(t))return{icon:'⌨',label:'shell'};
  if(['grep','glob','lsp'].includes(t))return{icon:'🔍',label:'search'};
  if(['webfetch','websearch'].includes(t))return{icon:'🌐',label:'web'};
- if(['subagent','models','question','skill','todowrite','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
+  if(['subagent','models','question','skill','skill_manage','todowrite','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
  return{icon:'🔧',label:'tool'};
 }
 function subOf(tool,args){
@@ -286,12 +293,15 @@ function subOf(tool,args){
   if(tool==='glob')return String(args.pattern||'').slice(0,100);
   if(tool==='webfetch')return String(args.url||'').slice(0,120);
   if(tool==='websearch')return String(args.query||'').slice(0,120);
-  if(tool==='subagent')return String(args.description||args.prompt||'').slice(0,120);
+   if(tool==='subagent')return String(args.description||args.prompt||'').slice(0,120);
+   if(tool==='skill_manage')return String(args.action||'list')+' '+String(args.name||'').slice(0,100);
+   if(tool==='memory')return String(args.action||'list')+' '+String(args.target||'').slice(0,100);
+   if(tool==='session_search')return String(args.query||'').slice(0,120);
   return JSON.stringify(args).slice(0,120);
  }catch(e){return '';}
 }
-function renderTool(x){
- let f=familyOf(x.tool);
+function renderTool(x,quiet){
+  let f=familyOf(x.tool);
  let d=document.createElement('div');d.className='tool';
  let res=String(x.result||'');
  if(/^.*(error|failed|not found)/i.test(res.slice(0,200)))d.classList.add('err');
@@ -306,9 +316,9 @@ function renderTool(x){
  head.onclick=()=>{d.classList.toggle('open');caret.textContent=d.classList.contains('open')?'▼':'▶';};
  if(d.classList.contains('err')){d.classList.add('open');caret.textContent='▼';}
  d.appendChild(head);d.appendChild(body);
- // desktop-style: tools render inline in the chat timeline, in order
- let t=document.getElementById('msgs');
- t.appendChild(d);d.scrollIntoView();
+  // desktop-style: tools render inline in the chat timeline, in order
+  let t=document.getElementById('msgs');
+  t.appendChild(d);if(!quiet)d.scrollIntoView();
  let olds=t.querySelectorAll(':scope > .tool');
  if(olds.length>100)olds[0].remove();
 }
@@ -359,9 +369,16 @@ function inline(s){
 }
 function md(src){
  let fences=[];
+ // dependency-free keyword highlight for fenced code (runs on escaped text;
+ // keywords never collide with &amp;/&lt;/&gt;/&quot; entities, so no breakage)
+ function hi(s){
+  s=String(s).replace(/\b(const|let|var|function|return|if|else|for|while|import|from|export|def|class|print|await|async|try|except|raise|new|true|false|null|None|True|False|self|this)\b/g,'<span class="kw">$1</span>');
+  s=s.replace(/(?<![\w&])(\d+(?:\.\d+)?)(?![\w;])/g,'<span class="num">$1</span>');
+  return s;
+ }
  // extract fenced blocks first so inner markdown chars are untouched
  src=String(src).replace(/```(\w*)\n([\s\S]*?)(```|$)/g,(m,lang,code)=>{
-  fences.push('<pre><button class="copybtn">Copy</button><code>'+esc(code.replace(/\n$/,''))+'</code></pre>');
+  fences.push('<pre><button class="copybtn">Copy</button><code class="lang-'+esc(lang||'txt')+'">'+hi(esc(code.replace(/\n$/,'')))+'</code></pre>');
   return '\u0000'+(fences.length-1)+'\u0000';
  });
  let lines=src.split('\n'),html='',i=0,list=null;
@@ -475,7 +492,9 @@ async function send(){
    history.push({role:'user',content:msg});
    steerBuffer.forEach(m=>history.push({role:'user',content:m}));
    history.push({role:'assistant',content:r.reply});
-   cur().history=history.slice(-60);cur().updated=Date.now();
+    cur().history=history.slice(-60);cur().updated=Date.now();
+    // persist tool logs with the session (restored on switch, included in export)
+    try{cur().tools=((cur().tools||[]).concat(r.tools||[])).slice(-200);}catch(e){}
    if((cur().title||'').startsWith('New session'))cur().title=msg.slice(0,50);
    saveStore();renderSessions();
    // render any tools the live stream missed (dedupe by count)

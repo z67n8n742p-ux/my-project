@@ -5,6 +5,7 @@ server.log
 server.restart.log
 .sessions/
 .jobs/
+.cron/
 .venv/
 */.venv/
 __pycache__/

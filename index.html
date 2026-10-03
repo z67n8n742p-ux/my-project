@@ -281,7 +281,7 @@ function familyOf(t){
  if(['bash'].includes(t))return{icon:'⌨',label:'shell'};
  if(['grep','glob','lsp'].includes(t))return{icon:'🔍',label:'search'};
  if(['webfetch','websearch'].includes(t))return{icon:'🌐',label:'web'};
-  if(['subagent','models','question','skill','skill_manage','todowrite','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
+  if(['subagent','models','question','skill','skill_manage','todowrite','cron','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
  return{icon:'🔧',label:'tool'};
 }
 function subOf(tool,args){
@@ -295,6 +295,7 @@ function subOf(tool,args){
   if(tool==='websearch')return String(args.query||'').slice(0,120);
    if(tool==='subagent')return String(args.description||args.prompt||'').slice(0,120);
    if(tool==='skill_manage')return String(args.action||'list')+' '+String(args.name||'').slice(0,100);
+   if(tool==='cron')return String(args.action||'list')+' '+String(args.schedule||args.job_id||'').slice(0,100);
    if(tool==='memory')return String(args.action||'list')+' '+String(args.target||'').slice(0,100);
    if(tool==='session_search')return String(args.query||'').slice(0,120);
   return JSON.stringify(args).slice(0,120);

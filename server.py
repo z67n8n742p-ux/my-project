@@ -745,8 +745,85 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
+def _cron_tick():
+    """Run due cron jobs once. Fresh agent per job (no history), max 6 steps.
+
+    Best-effort: every failure is caught, marked, and logged. Never raises,
+    never blocks chat traffic (runs in its own daemon thread).
+    """
+    try:
+        import cron as _cron
+    except Exception as e:
+        log(f"cron tick skipped (no cron.py): {e}")
+        return
+    try:
+        due = _cron.due_jobs()
+    except Exception as e:
+        log(f"cron tick load error: {e}")
+        return
+    for job in due:
+        jid = job.get("id", "?")
+        try:
+            try:
+                from prompt import build_system_prompt as _build_sys
+                sys_text = _build_sys("")
+            except Exception:
+                sys_text = ""
+            model = job.get("model") or DEFAULT_MODEL
+            try:
+                live = get_live_models()
+                if model not in live:
+                    model = live[0] if live else DEFAULT_MODEL
+            except Exception:
+                pass
+            msgs = []
+            if sys_text:
+                msgs.append({"role": "system", "content": sys_text})
+            msgs.append({"role": "user", "content": job.get("prompt", "")})
+            reply, tool_logs, _, _ = run_agent(msgs, model, max_steps=6,
+                                               live_logs=None, run_id=f"cron-{jid}-{int(time.time())}")
+            # deliver: transcript file + cron session (searchable via session_search)
+            try:
+                _cron.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+                body = f"# cron {jid} @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n## prompt\n\n{job.get('prompt','')}\n\n## reply\n\n{reply}\n\n## tools\n\n" + "\n".join(
+                    f"- {t.get('tool')}: {str(t.get('result',''))[:300]}" for t in (tool_logs or []))
+                (_cron.RUNS_DIR / f"{jid}-{int(time.time())}.md").write_text(body[:50000])
+            except Exception as e:
+                log(f"cron run-save error {jid}: {e}")
+            try:
+                _save_turn(f"cron-{jid}", job.get("prompt", ""), reply, model, tool_logs)
+            except Exception as e:
+                log(f"cron session-save error {jid}: {e}")
+            _cron.mark_ran(jid, "ok")
+            log(f"cron job {jid} ok reply_len={len(reply)}")
+        except Exception as e:
+            try:
+                _cron.mark_ran(jid, f"failed: {str(e)[:100]}")
+            except Exception:
+                pass
+            log(f"cron job {jid} ERROR: {e}")
+
+
+def _cron_start(interval_s: int = 30):
+    """Start daemon tick thread. No-op if already running in this process."""
+    def _loop():
+        while True:
+            try:
+                time.sleep(interval_s)
+                _cron_tick()
+            except Exception as e:
+                try:
+                    log(f"cron loop error: {e}")
+                except Exception:
+                    pass
+    t = threading.Thread(target=_loop, name="cron-tick", daemon=True)
+    t.start()
+    log(f"cron scheduler on (tick {interval_s}s, store .cron/jobs.json)")
+
+
 if __name__ == "__main__":
     _store_init()
+    _cron_start()
     log(f"serving http://localhost:{PORT} (log: {LOG_FILE})")
     log(f"model default={DEFAULT_MODEL} key={'set' if API_KEY else 'MISSING export MAXPLUS_API_KEY=ccsk-...'}")
     # open chatbot automatically (set NO_BROWSER=1 to skip)

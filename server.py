@@ -7,6 +7,8 @@ Docs: https://maxplus-ai.cc/docs/api
 import json
 import hmac
 import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -743,6 +745,44 @@ def _chat_admit(data):
                       "history": history, "user_msg": user_msg, "session_id": session_id})
 
 
+def _ws_git():
+    """Branch + dirty count for the workspace header. Never raises."""
+    try:
+        b = subprocess.run(["git", "-C", str(ROOT), "branch", "--show-current"],
+                           capture_output=True, text=True, timeout=5)
+        if b.returncode != 0:
+            return None
+        s = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain=v1"],
+                           capture_output=True, text=True, timeout=5)
+        dirty = len([l for l in s.stdout.splitlines() if l.strip()]) if s.returncode == 0 else 0
+        return {"branch": b.stdout.strip() or "(detached)", "dirty": dirty}
+    except Exception:
+        return None
+
+
+def _ws_path(rel):
+    """Resolve rel under ROOT. Returns (Path, error). Never raises."""
+    try:
+        rel = (rel or "").strip().lstrip("/")
+        if rel in (".", "./"):
+            rel = ""
+        p = (ROOT / rel).resolve()
+        root = ROOT.resolve()
+        if p != root and root not in p.parents:
+            return None, "outside workspace"
+        return p, None
+    except Exception as e:
+        return None, str(e)[:100]
+
+
+def _ws_rel(p):
+    """Path relative to ROOT as posix string. Never raises."""
+    try:
+        return p.resolve().relative_to(ROOT.resolve()).as_posix()
+    except Exception:
+        return ""
+
+
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
@@ -1084,6 +1124,83 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)}, 500)
                 return
             self.send_json({"ok": True, "skills": out})
+        elif parsed.path == "/api/files":
+            # Workspace browser: list a directory under ROOT (containment-checked).
+            q = urllib.parse.parse_qs(parsed.query or "")
+            rel = (q.get("path") or [""])[0]
+            p, err = _ws_path(rel)
+            if err or not p.is_dir():
+                self.send_json({"ok": False, "error": err or "not a directory"}, 400)
+                return
+            entries = []
+            try:
+                items = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+                for e in items[:2000]:
+                    try:
+                        st = e.stat()
+                        entries.append({"name": e.name, "type": "dir" if e.is_dir() else "file",
+                                        "size": st.st_size if e.is_file() else 0,
+                                        "mtime": st.st_mtime})
+                    except Exception:
+                        continue
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+                return
+            git = _ws_git() if not rel else None
+            self.send_json({"ok": True, "path": _ws_rel(p), "entries": entries, "git": git})
+        elif parsed.path == "/api/file":
+            # Workspace browser: read one file (text preview or binary flag).
+            q = urllib.parse.parse_qs(parsed.query or "")
+            rel = (q.get("path") or [""])[0]
+            p, err = _ws_path(rel)
+            if err or not p.is_file():
+                self.send_json({"ok": False, "error": err or "not a file"}, 400)
+                return
+            try:
+                size = p.stat().st_size
+                raw = p.read_bytes()[:512_000]
+                if b"\0" in raw[:8192]:
+                    ext = p.suffix.lower()
+                    self.send_json({"ok": True, "path": _ws_rel(p), "binary": True, "size": size,
+                                    "image": ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")})
+                else:
+                    text = raw.decode("utf-8", errors="replace")
+                    trunc = len(text) == 512_000 or size > 512_000
+                    self.send_json({"ok": True, "path": _ws_rel(p), "text": text[:200_000],
+                                    "truncated": trunc, "size": size})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+        elif parsed.path == "/api/raw":
+            # Workspace browser: raw bytes for image preview / download.
+            q = urllib.parse.parse_qs(parsed.query or "")
+            rel = (q.get("path") or [""])[0]
+            p, err = _ws_path(rel)
+            if err or not p.is_file():
+                self.send_response(404)
+                self.end_headers()
+                return
+            ctype = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                     ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+                     ".pdf": "application/pdf"}.get(p.suffix.lower(), "application/octet-stream")
+            try:
+                raw = p.read_bytes()
+                if len(raw) > 20_000_000:
+                    self.send_response(413)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                if (q.get("download") or [""])[0]:
+                    self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            except Exception:
+                try:
+                    self.send_response(500)
+                    self.end_headers()
+                except Exception:
+                    pass
         elif parsed.path == "/api/session":
             q = urllib.parse.parse_qs(parsed.query or "")
             sid = _safe_sid((q.get("id") or [""])[0])
@@ -1251,6 +1368,84 @@ class Handler(BaseHTTPRequestHandler):
                 return
             log(f"/api/compact turns={len(lines)} summary_len={len(summary)}")
             self.send_json({"ok": True, "summary": summary, "turns": len(lines)})
+        elif parsed.path in ("/api/file", "/api/mkdir", "/api/delete", "/api/rename"):
+            # Workspace browser writes. Containment-checked + sensitive-path guard
+            # (same rule as the agent's write/edit tools; FORMY_FILE_SCOPE=allow bypasses).
+            try:
+                from tools import _sensitive_path as _ws_sensitive
+            except Exception:
+                _ws_sensitive = lambda p: None
+            if parsed.path == "/api/file":
+                rel, content = str(data.get("path") or ""), data.get("content")
+                if not isinstance(content, str) or len(content) > 1_000_000:
+                    self.send_json({"ok": False, "error": "content must be text under 1MB"}, 400)
+                    return
+                p, err = _ws_path(rel)
+                if err or not rel:
+                    self.send_json({"ok": False, "error": err or "need path"}, 400)
+                    return
+                blocked = _ws_sensitive(str(p))
+                if blocked:
+                    self.send_json({"ok": False, "error": f"write blocked: {blocked}"}, 403)
+                    return
+                try:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text(content)
+                    log(f"/api/file write {_ws_rel(p)} {len(content)} chars")
+                    self.send_json({"ok": True, "path": _ws_rel(p), "size": len(content)})
+                except Exception as e:
+                    self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+            elif parsed.path == "/api/mkdir":
+                p, err = _ws_path(str(data.get("path") or ""))
+                if err or not str(data.get("path") or "").strip():
+                    self.send_json({"ok": False, "error": err or "need path"}, 400)
+                    return
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                    self.send_json({"ok": True, "path": _ws_rel(p)})
+                except Exception as e:
+                    self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+            elif parsed.path == "/api/delete":
+                rel = str(data.get("path") or "")
+                p, err = _ws_path(rel)
+                if err or not rel:
+                    self.send_json({"ok": False, "error": err or "need path"}, 400)
+                    return
+                blocked = _ws_sensitive(str(p))
+                if blocked:
+                    self.send_json({"ok": False, "error": f"delete blocked: {blocked}"}, 403)
+                    return
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    elif p.exists():
+                        p.unlink()
+                    else:
+                        self.send_json({"ok": False, "error": "not found"}, 404)
+                        return
+                    log(f"/api/delete {_ws_rel(p) if p != ROOT.resolve() else '.'}")
+                    self.send_json({"ok": True})
+                except Exception as e:
+                    self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+            elif parsed.path == "/api/rename":
+                src, err1 = _ws_path(str(data.get("from") or ""))
+                dst, err2 = _ws_path(str(data.get("to") or ""))
+                if err1 or err2 or not str(data.get("from") or "").strip() or not str(data.get("to") or "").strip():
+                    self.send_json({"ok": False, "error": err1 or err2 or "need from + to"}, 400)
+                    return
+                blocked = _ws_sensitive(str(src)) or _ws_sensitive(str(dst))
+                if blocked:
+                    self.send_json({"ok": False, "error": f"rename blocked: {blocked}"}, 403)
+                    return
+                try:
+                    if not src.exists():
+                        self.send_json({"ok": False, "error": "not found"}, 404)
+                        return
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    src.rename(dst)
+                    self.send_json({"ok": True, "path": _ws_rel(dst)})
+                except Exception as e:
+                    self.send_json({"ok": False, "error": str(e)[:200]}, 500)
         else:
             self.send_response(404)
             self.end_headers()

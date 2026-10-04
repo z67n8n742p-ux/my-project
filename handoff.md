@@ -24,8 +24,12 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
   `POST /api/chat` (blocking, compat), `POST /api/chat/start` (202, two-phase),
   `GET /api/chat/result?run=<id>`, `POST /api/steer`, `POST /api/interrupt` (Esc/Stop),
   `GET /api/approval/pending?run=<id>`, `POST /api/approval/respond`,
-  `GET /api/progress?run=<id>`, `GET /api/event?run=<id>` (SSE),
-  `GET /api/session?id=<session-id>`.
+   `GET /api/progress?run=<id>`, `GET /api/event?run=<id>` (SSE),
+   `GET /api/session?id=<session-id>`, `GET /api/skills`,
+   `POST /api/compact` (summary via SUMMARY_SYSTEM),
+   workspace: `GET /api/files?path=` (+git at root), `GET /api/file?path=`,
+   `GET /api/raw?path=` (+`&download=1`), `POST /api/file|/api/mkdir|
+   /api/delete|/api/rename` (ROOT containment + `_sensitive_path`).
   Retry 1+4 (429/5xx), `_bound_for_model` (spill full to `.jobs/`),
   `_drain_steer`, run/item idempotency (+ SQLite cross-restart), per-call isolation,
   `_maybe_compact` per step + `_strip_compact_echo` on replies, boot recovery
@@ -86,8 +90,7 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    ↻ Retry (truncate + resend via send(), no server change), per-block Copy→Copied!,
    ctx footer (est tokens · % · ~$ + fill bar, model-aware windows).
    P2-split (2026-10-04): prism-lite highlight (py/js/bash/json/sql, string-first
-   tokenizer, zero-dep) + distinct subagent card (🛰️, indented). Mermaid skipped
-   (heavy + XSS surface, rarely used).
+   tokenizer, zero-dep) + distinct subagent card (🛰️, indented).
    Mermaid (2026-10-04, on request): ```mermaid fences render to SVG via lazy CDN
    (pinned 11.17.2 + SRI, `securityLevel:strict`); code fallback offline; 3.5MB
    never vendored, loads once on first diagram.
@@ -101,6 +104,11 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    from GET /api/skills (substring match, built-ins win; unknown incl. skills
    pass through to agent). POST /api/compact summarizes via SUMMARY_SYSTEM.
    /workspace skipped (single repo root). Server restarted (new endpoints).
+   Workspace (2026-10-04): inspector Files tab (System|Files, drag-resize 220–
+   700px persisted) — lazy tree (click toggle, dbl-click nav), breadcrumbs,
+   preview md/code(img inline, binary→download), edit+save (dirty guard),
+   +File/+Dir/rename/delete, ⎇ branch·dirty badge, `workspace://` chat links
+   open in preview. Server restarted (files/file/raw/mkdir/delete/rename).
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

@@ -88,6 +88,9 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    P2-split (2026-10-04): prism-lite highlight (py/js/bash/json/sql, string-first
    tokenizer, zero-dep) + distinct subagent card (🛰️, indented). Mermaid skipped
    (heavy + XSS surface, rarely used).
+   Mermaid (2026-10-04, on request): ```mermaid fences render to SVG via lazy CDN
+   (pinned 11.17.2 + SRI, `securityLevel:strict`); code fallback offline; 3.5MB
+   never vendored, loads once on first diagram.
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

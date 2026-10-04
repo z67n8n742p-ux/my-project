@@ -177,6 +177,8 @@ button:active{transform:scale(.96)}
 .tok-c{color:var(--faint);font-style:italic}
 .tok-v{color:var(--link)}
 @media (prefers-color-scheme:light){.tok-s{color:#1c7a3d}}
+/* P2: mermaid diagrams (lazy CDN; code fallback offline) */
+.mm svg{max-width:100%;height:auto;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:8px}
 .tool.sub{border-left:3px solid var(--accent-text);margin-left:14px;width:auto}
 .tool.sub .fname{color:var(--accent-text)}
 .copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
@@ -610,7 +612,12 @@ function md(src){
    return hlRun(code,re,cls);
   }
  // extract fenced blocks first so inner markdown chars are untouched
- src=String(src).replace(/```(\w*)\n([\s\S]*?)(```|$)/g,(m,lang,code)=>{
+  src=String(src).replace(/```(\w*)\n([\s\S]*?)(```|$)/g,(m,lang,code)=>{
+   if(String(lang||'').toLowerCase()==='mermaid'){
+    let raw=String(code).replace(/\n$/,'');
+    fences.push('<div class="mm" data-code="'+esc(encodeURIComponent(raw))+'"><pre><button class="copybtn">Copy</button><code class="lang-mermaid">'+esc(raw)+'</code></pre></div>');
+    return '\u0000'+(fences.length-1)+'\u0000';
+   }
    fences.push('<pre><button class="copybtn">Copy</button><code class="lang-'+esc(lang||'txt')+'">'+hl(code.replace(/\n$/,''),lang)+'</code></pre>');
   return '\u0000'+(fences.length-1)+'\u0000';
  });
@@ -651,8 +658,41 @@ function md(src){
  closeList();
  return html;
 }
+ // ---------- mermaid (lazy CDN, pinned 11.17.2 + SRI; code fallback offline) ----------
+ var _mmSrc='https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js';
+ var _mmSri='sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2';
+ var _mmLoading=false,_mmN=0;
+ function drawMm(el){
+  try{
+   if(!el||el.dataset.done||!window.mermaid)return;
+   el.dataset.done='1';
+   var code=decodeURIComponent(el.dataset.code||'');
+   var id='mm-'+Date.now()+'-'+(_mmN++);
+   window.mermaid.render(id,code).then(function(r){
+    if(!document.contains(el))return;
+    el.innerHTML=r.svg;
+    scrollIfPinned();
+   }).catch(function(){try{delete el.dataset.done;}catch(_){}});
+  }catch(e){try{if(el)delete el.dataset.done;}catch(_){}}
+ }
+ function renderMermaid(root){
+  try{
+   var blocks=root.querySelectorAll?root.querySelectorAll('div.mm:not([data-done])'):[];
+   if(!blocks.length)return;
+   if(window.mermaid){
+    if(!window._mmInit){window._mmInit=true;try{window.mermaid.initialize({securityLevel:'strict',startOnLoad:false});}catch(e){}}
+    blocks.forEach(drawMm);return;
+   }
+   if(_mmLoading)return;_mmLoading=true;
+   var s=document.createElement('script');
+   s.src=_mmSrc;s.integrity=_mmSri;s.crossOrigin='anonymous';
+   s.onload=function(){_mmLoading=false;renderMermaid(document);};
+   s.onerror=function(){_mmLoading=false;};
+   document.head.appendChild(s);
+  }catch(e){_mmLoading=false;}
+ }
 document.addEventListener('click',e=>{
- if(e.target&&e.target.classList&&e.target.classList.contains('copybtn')){
+  if(e.target&&e.target.classList&&e.target.classList.contains('copybtn')){
   let code=e.target.parentElement.querySelector('code');
    let done=()=>{e.target.textContent='Copied!';setTimeout(()=>e.target.textContent='Copy',1200);};
   if(navigator.clipboard&&code)navigator.clipboard.writeText(code.textContent).then(done,done);
@@ -725,6 +765,7 @@ function addMsg(role,text,silent,ts,hidx){
  d.appendChild(body);
  if(ts)attachMeta(d,role,ts,hidx==null?-1:hidx);
  document.getElementById('msgs').appendChild(d);
+ try{renderMermaid(d);}catch(e){}
  if(role==='user'){_pinned=true;scrollToBottom();}
  else if(!silent)scrollIfPinned();
  try{updateCtx();}catch(e){}
@@ -840,11 +881,11 @@ async function send(){
     function finishLive(finalReply){
      // markdown re-render changes bubble heights: hold the reader's place if scrolled up
      stableMutate(()=>{
-      for(let s of liveSegs){
-       if(!document.contains(s.el))continue;
-       let txt=(finalReply!=null&&s===curSeg()&&s.text)?finalReply:s.text;
-       if(txt)s.el.innerHTML=md(txt);else s.el.remove();
-      }
+       for(let s of liveSegs){
+        if(!document.contains(s.el))continue;
+        let txt=(finalReply!=null&&s===curSeg()&&s.text)?finalReply:s.text;
+        if(txt){s.el.innerHTML=md(txt);try{renderMermaid(s.el);}catch(_){}}else s.el.remove();
+       }
      });
      scrollIfPinned();
     }

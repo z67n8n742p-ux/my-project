@@ -279,6 +279,17 @@ button:active{transform:scale(.96)}
 .cprow .cbtns{display:flex;gap:4px;margin-top:4px}
 .cprow .cbtns button{font-size:11px;padding:2px 8px}
 .cprow pre{background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:6px;overflow:auto;max-height:200px;font-size:11px;white-space:pre-wrap}
+/* terminal tab + skills tab + voice */
+#micBtn.rec{border-color:var(--error);color:var(--error)}
+#termOut{background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:8px;overflow:auto;max-height:46vh;min-height:160px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word}
+#termRow{display:flex;gap:6px;align-items:center;margin-top:6px}
+#termRow input{flex:1;font-family:var(--mono);font-size:12px}
+.skillrow{padding:6px 8px;border-radius:6px;cursor:pointer}
+.skillrow:hover{background:var(--hover)}
+.skillrow .snm{font-family:var(--mono);font-weight:600;font-size:13px}
+.skillrow .sds{color:var(--muted);font-size:12px}
+#skillPrev{margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+#skillPrev textarea{width:100%;min-height:200px;font-family:var(--mono);font-size:12px}
 </style></head>
 <body>
 <header data-slot="titlebar">
@@ -324,13 +335,13 @@ button:active{transform:scale(.96)}
   <button onclick="respondApproval('deny')">Deny</button>
  </div>
 </div>
-<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="sendBtn" onclick="send()">Send</button></div>
+<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="micBtn" title="Voice input">🎤</button><button id="sendBtn" onclick="send()">Send</button></div>
 <div id="slashMenu"></div>
 <div id="ctxRow" title="Estimated context use for this session"><div id="ctxBar"><div id="ctxFill"></div></div><span id="ctxTxt">ctx —</span></div>
 </main>
 <aside data-slot="inspector" id="inspector">
 <div id="inspGrip" title="Drag to resize"></div>
-<div id="inspTabs"><button id="tabSysBtn" class="on">System</button><button id="tabFilesBtn">Files</button><button id="tabTasksBtn">Tasks</button></div>
+<div id="inspTabs"><button id="tabSysBtn" class="on">System</button><button id="tabFilesBtn">Files</button><button id="tabTasksBtn">Tasks</button><button id="tabTermBtn">Term</button><button id="tabSkillsBtn">Skills</button></div>
 <div id="tabSys">
 <h4>System prompt (your own)</h4>
 <textarea id="sys"></textarea><br><br>
@@ -344,6 +355,16 @@ button:active{transform:scale(.96)}
 <textarea id="cronPrompt" rows="2" placeholder="job prompt…" style="width:100%"></textarea>
 <h4>Runs</h4>
 <div id="cronRuns"></div>
+</div>
+<div id="tabTerm" style="display:none">
+<div class="wsmeta"><span id="termStat">no terminal</span><span style="flex:1"></span><button id="termNew">New</button><button id="termKill">Kill</button></div>
+<pre id="termOut" title="Your own shell — full-screen TUIs (vim, htop) are not supported"></pre>
+<div id="termRow"><span style="font-family:var(--mono);color:var(--accent-text)">$</span><input id="termIn" autocomplete="off" placeholder="type a command… (Ctrl+C interrupts)"></div>
+</div>
+<div id="tabSkills" style="display:none">
+<div style="display:flex;gap:6px;margin:4px 0"><input id="skillSearch" placeholder="Search skills" style="flex:1" autocomplete="off"><button id="skillNew" title="New skill">+ New</button></div>
+<div id="skillList"></div>
+<div id="skillPrev"></div>
 </div>
 <div id="tabFiles" style="display:none">
 <div id="wsHead"><span id="wsGit" title="git branch + dirty count"></span><span style="flex:1"></span><button id="wsNewFile" title="New file in this folder">+File</button><button id="wsNewDir" title="New folder">+Dir</button><button id="wsUpBtn" title="Upload files here">+Up</button><button id="wsCpBtn" title="Rollback checkpoints">⏪</button></div>
@@ -1332,16 +1353,17 @@ function jumpLive(){
 }
 // ---------- workspace browser (inspector Files tab) ----------
 let wsRoot='',wsKids={},wsPreviewPath=null,wsDirty=false,wsTab=false;
+const WS_TABS=['sys','files','tasks','term','skills'];
 function wsShow(tab){
- document.getElementById('tabSys').style.display=tab==='sys'?'block':'none';
- document.getElementById('tabFiles').style.display=tab==='files'?'block':'none';
- document.getElementById('tabTasks').style.display=tab==='tasks'?'block':'none';
- document.getElementById('tabSysBtn').classList.toggle('on',tab==='sys');
- document.getElementById('tabFilesBtn').classList.toggle('on',tab==='files');
- document.getElementById('tabTasksBtn').classList.toggle('on',tab==='tasks');
+ WS_TABS.forEach(t=>{
+  let cap=t[0].toUpperCase()+t.slice(1);
+  document.getElementById('tab'+cap).style.display=t===tab?'block':'none';
+  document.getElementById('tab'+cap+'Btn').classList.toggle('on',t===tab);
+ });
  wsTab=(tab==='files');
  if(tab==='files'&&!wsRoot&&!Object.keys(wsKids).length)wsNav('');
  if(tab==='tasks')cronRefresh();
+ if(tab==='skills')skillRefresh();
 }
 function wsGuard(){if(wsDirty&&!confirm('Discard unsaved edits?'))return false;wsDirty=false;return true;}
 async function wsFetch(url,opts){
@@ -1524,6 +1546,8 @@ function wsOpen(path){
 document.getElementById('tabSysBtn').onclick=()=>wsShow('sys');
 document.getElementById('tabFilesBtn').onclick=()=>wsShow('files');
 document.getElementById('tabTasksBtn').onclick=()=>wsShow('tasks');
+document.getElementById('tabTermBtn').onclick=()=>wsShow('term');
+document.getElementById('tabSkillsBtn').onclick=()=>wsShow('skills');
 document.getElementById('toolsBtn').onclick=()=>{
  let groups=[...document.querySelectorAll('#msgs .tool-group')];
  if(!groups.length)return;
@@ -1707,6 +1731,191 @@ document.addEventListener('click',e=>{
   document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
  };
 })();
+// ---------- voice input (Web Speech, frontend-only; hidden if unsupported) ----------
+let rec=null,recBase='';
+try{if(!(window.SpeechRecognition||window.webkitSpeechRecognition))document.getElementById('micBtn').style.display='none';}catch(e){}
+document.getElementById('micBtn').onclick=()=>{
+ let SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){alert('Voice input not supported in this browser (Chrome/Edge/Safari).');return;}
+ if(rec){try{rec.stop();}catch(e){}return;}
+ rec=new SR();rec.lang='en-US';rec.interimResults=true;rec.continuous=false;
+ recBase=document.getElementById('in').value;
+ rec.onresult=e=>{
+  let interim='',final='';
+  for(let i=e.resultIndex;i<e.results.length;i++){
+   if(e.results[i].isFinal)final+=e.results[i][0].transcript;
+   else interim+=e.results[i][0].transcript;
+  }
+  document.getElementById('in').value=((recBase?recBase+' ':'')+final+interim).slice(0,4000);
+  autogrow();
+  if(final)recBase=document.getElementById('in').value;
+ };
+ rec.onend=()=>{rec=null;try{document.getElementById('micBtn').classList.remove('rec');}catch(e){}};
+ rec.onerror=()=>{try{rec.stop();}catch(e){}};
+ try{rec.start();document.getElementById('micBtn').classList.add('rec');}catch(e){rec=null;}
+};
+// ---------- terminal (your own shell on a real pty; 1s poll) ----------
+let termId=null,termOff=0,termTimer=null,termHist=[],termHi=-1;
+function termStat(t){try{document.getElementById('termStat').textContent=t;}catch(e){}}
+function stopTermTimer(){if(termTimer){clearInterval(termTimer);termTimer=null;}}
+function ansi2html(s){
+ s=String(s).replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+ s=s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,'');
+ s=s.replace(/\x1b[()][0-9A-Z]/g,'');
+ s=s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]/g,'');
+ const F={30:'#8a93a3',31:'#e06c75',32:'#7fd07f',33:'#e3b341',34:'#9dbefe',35:'#c792ea',36:'#56c2d6',37:'#e6e6e6',90:'#6b7280',91:'#ff7b85',92:'#98e698',93:'#f0c674',94:'#aecbfa',95:'#d7aefb',96:'#7fe3f0',97:'#ffffff'};
+ const B={40:'#2a2e38',41:'#e06c75',42:'#7fd07f',43:'#e3b341',44:'#9dbefe',45:'#c792ea',46:'#56c2d6',47:'#e6e6e6',100:'#3a3f4c',101:'#ff7b85',102:'#98e698',103:'#f0c674',104:'#aecbfa',105:'#d7aefb',106:'#7fe3f0',107:'#ffffff'};
+ let fg=null,bg=null,bold=false,out='';
+ let style=()=>{let st='';if(fg)st+='color:'+fg+';';if(bg)st+='background:'+bg+';';if(bold)st+='font-weight:700;';return st;};
+ s.split(/(\x1b\[[0-9;]*m)/g).forEach(seg=>{
+  let m=/^\x1b\[([0-9;]*)m$/.exec(seg);
+  if(!m){let st=style();out+=st?'<span style="'+st+'">'+esc(seg)+'</span>':esc(seg);return;}
+  (m[1]===''?'0':m[1]).split(';').forEach(c=>{
+   c=parseInt(c||'0');
+   if(c===0){fg=null;bg=null;bold=false;}
+   else if(c===1)bold=true;
+   else if(c===22)bold=false;
+   else if(F[c])fg=F[c];
+   else if(c===39)fg=null;
+   else if(B[c])bg=B[c];
+   else if(c===49)bg=null;
+  });
+ });
+ return out;
+}
+async function termPoll(){
+ if(!termId)return;
+ try{
+  let j=await (await wsFetch('/api/term?poll='+encodeURIComponent(termId)+'&offset='+termOff)).json();
+  if(!j.ok){termStat('dead — New to restart');termId=null;stopTermTimer();return;}
+  if(j.text){
+   let el=document.getElementById('termOut');
+   let near=(el.scrollHeight-el.scrollTop-el.clientHeight)<60;
+   let div=document.createElement('div');div.innerHTML=ansi2html(j.text);el.appendChild(div);
+   while(el.children.length>500)el.removeChild(el.firstChild);
+   if(near)el.scrollTop=el.scrollHeight;
+  }
+  termOff=j.total;
+  termStat((j.alive?'live':'exited — New to restart')+' · '+termId);
+  if(!j.alive)stopTermTimer();
+ }catch(e){}
+}
+function termStartTimer(){stopTermTimer();termTimer=setInterval(termPoll,1000);}
+async function termSend(data){
+ if(!termId)return;
+ try{await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'input',id:termId,data})});termPoll();}catch(e){}
+}
+document.getElementById('termNew').onclick=async()=>{
+ stopTermTimer();
+ try{
+  let r=await (await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create',cols:100,rows:30})})).json();
+  if(!r.ok)throw new Error(r.error||'create failed');
+  termId=r.id;termOff=0;termHist=[];termHi=-1;
+  document.getElementById('termOut').innerHTML='';
+  termStat('live · '+termId);termStartTimer();termPoll();
+  document.getElementById('termIn').focus();
+ }catch(e){termStat('ERROR: '+e.message);}
+};
+document.getElementById('termKill').onclick=async()=>{
+ if(!termId)return;
+ try{await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'kill',id:termId})});}catch(e){}
+ termId=null;stopTermTimer();termStat('no terminal');
+};
+document.getElementById('termIn').addEventListener('keydown',e=>{
+ if(e.key==='Enter'){e.preventDefault();let v=e.target.value;termHist.push(v);termHi=termHist.length;e.target.value='';termSend(v+'\n');}
+ else if(e.key==='ArrowUp'){e.preventDefault();if(termHist.length){termHi=Math.max(0,termHi-1);e.target.value=termHist[termHi]||'';}}
+ else if(e.key==='ArrowDown'){e.preventDefault();if(termHist.length){termHi=Math.min(termHist.length,termHi+1);e.target.value=termHist[termHi]||'';}}
+ else if(e.key==='c'&&e.ctrlKey){e.preventDefault();termSend('\x03');}
+ else if(e.key==='d'&&e.ctrlKey&&!e.target.value){e.preventDefault();termSend('\x04');}
+});
+// ---------- skills panel (same skills/ dir the agent writes) ----------
+async function skillRefresh(){
+ let box=document.getElementById('skillList');if(!box)return;
+ let q=((document.getElementById('skillSearch')||{}).value||'').toLowerCase();
+ box.textContent='…';
+ try{
+  let j=await (await wsFetch('/api/files?path=skills')).json();
+  if(!j.ok){
+   // skills/ doesn't exist yet — not an error
+   box.textContent='No skills yet — + New, or let the agent save one via chat.';
+   if(j.error&&!/not a directory|not a file/.test(j.error))throw new Error(j.error);
+   return;
+  }
+  let dirs=(j.entries||[]).filter(e=>e.type==='dir');
+  let items=[];
+  for(let d of dirs){
+   let desc='';
+   try{
+    let f=await (await wsFetch('/api/file?path='+encodeURIComponent('skills/'+d.name+'/SKILL.md'))).json();
+    if(f.ok&&!f.binary){for(let ln of f.text.split('\n')){ln=ln.trim().replace(/^#+\s*/,'');if(ln){desc=ln.slice(0,120);break;}}}
+   }catch(e){}
+   if(q&&(d.name+' '+desc).toLowerCase().includes(q))items.push({name:d.name,desc});
+   else if(!q)items.push({name:d.name,desc});
+  }
+  box.innerHTML='';
+  if(!items.length){box.textContent=q?'No match.':'No skills yet — + New, or let the agent save one via chat.';return;}
+  items.forEach(it=>{
+   let d=document.createElement('div');d.className='skillrow';
+   let n=document.createElement('div');n.className='snm';n.textContent=it.name;
+   let s=document.createElement('div');s.className='sds';s.textContent=it.desc||'—';
+   d.appendChild(n);d.appendChild(s);
+   d.onclick=()=>skillPreview(it.name);
+   box.appendChild(d);
+  });
+ }catch(e){box.textContent='ERROR: '+e.message;}
+}
+async function skillPreview(name){
+ let box=document.getElementById('skillPrev');box.innerHTML='…';
+ try{
+  let j=await (await wsFetch('/api/file?path='+encodeURIComponent('skills/'+name+'/SKILL.md'))).json();
+  if(!j.ok||j.binary)throw new Error(j.error||'read failed');
+  box.innerHTML='';
+  let meta=document.createElement('div');meta.className='wsmeta';
+  let nm=document.createElement('span');nm.textContent=name;meta.appendChild(nm);
+  let div=document.createElement('div');div.className='msg assistant';div.innerHTML=md(j.text);
+  box.appendChild(meta);box.appendChild(div);
+  let eb=document.createElement('button');eb.textContent='Edit';
+  eb.onclick=()=>{
+   box.querySelectorAll('.msg').forEach(x=>x.remove());
+   let ta=document.createElement('textarea');ta.value=j.text;box.appendChild(ta);ta.focus();
+   let row=document.createElement('div');row.className='wsmeta';box.appendChild(row);
+   let sv=document.createElement('button');sv.textContent='Save';
+   sv.onclick=async()=>{
+    try{
+     let r=await (await wsFetch('/api/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'skills/'+name+'/SKILL.md',content:ta.value})})).json();
+     if(!r.ok)throw new Error(r.error||'save failed');
+     skillPreview(name);skillRefresh();
+    }catch(e){alert('Save failed: '+e.message);}
+   };
+   let cx=document.createElement('button');cx.textContent='Cancel';cx.style.marginLeft='6px';
+   cx.onclick=()=>skillPreview(name);
+   row.appendChild(sv);row.appendChild(cx);
+  };
+  let del=document.createElement('button');del.textContent='Delete';
+  del.onclick=async()=>{
+   if(!confirm('Delete skill "'+name+'"?'))return;
+   try{
+    let r=await (await wsFetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'skills/'+name})})).json();
+    if(!r.ok)throw new Error(r.error||'delete failed');
+    box.innerHTML='';skillRefresh();
+   }catch(e){alert('Delete failed: '+e.message);}
+  };
+  meta.appendChild(eb);meta.appendChild(del);
+ }catch(e){box.textContent='ERROR: '+e.message;}
+}
+document.getElementById('skillNew').onclick=async()=>{
+ let n=prompt('Skill name (lowercase, dashes)');
+ if(!n)return;
+ n=n.trim().toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'');
+ if(!n){alert('Bad name.');return;}
+ try{
+  let r=await (await wsFetch('/api/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'skills/'+n+'/SKILL.md',content:'# '+n+'\n\nOne-line description of when to use this.\n\n## Instructions\n\nSteps for the agent to follow.\n'})})).json();
+  if(!r.ok)throw new Error(r.error||'create failed');
+  document.getElementById('skillSearch').value='';
+  skillRefresh();skillPreview(n);
+ }catch(e){alert('Create failed: '+e.message);}
+};
+document.getElementById('skillSearch').addEventListener('input',()=>{try{skillRefresh();}catch(e){}});
 init();
 </script>
 </body></html>

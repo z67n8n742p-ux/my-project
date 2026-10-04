@@ -817,6 +817,115 @@ def _cp_save(entries):
         pass
 
 
+TERMS = {}
+TERMS_LOCK = threading.Lock()
+TERM_MAX = 4
+TERM_BUF_CAP = 200_000
+
+
+def _term_kill(tid):
+    """Close a terminal and reap its child. Never raises."""
+    try:
+        t = None
+        with TERMS_LOCK:
+            t = TERMS.pop(tid, None)
+        if not t:
+            return
+        try:
+            os.close(t["fd"])
+        except Exception:
+            pass
+        try:
+            os.kill(t["pid"], 9)
+        except Exception:
+            pass
+        try:
+            os.waitpid(t["pid"], os.WNOHANG)
+        except Exception:
+            pass
+        log(f"/api/term kill {tid}")
+    except Exception:
+        pass
+
+
+def _term_reader(tid, fd):
+    """Pump pty master output into the term buffer. Ends with the child."""
+    import select as _select
+    try:
+        while True:
+            try:
+                r, _, _ = _select.select([fd], [], [], 5)
+            except Exception:
+                break
+            if not r:
+                with TERMS_LOCK:
+                    if tid not in TERMS:
+                        break
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            with TERMS_LOCK:
+                t = TERMS.get(tid)
+                if not t:
+                    break
+                t["buf"] += chunk
+                if len(t["buf"]) > TERM_BUF_CAP:
+                    t["buf"] = t["buf"][-TERM_BUF_CAP:]
+                    t["base"] = t.get("base", 0)
+                t["active"] = time.time()
+    finally:
+        with TERMS_LOCK:
+            t = TERMS.get(tid)
+            if t:
+                t["dead"] = True
+
+
+def _term_create(cols=100, rows=30):
+    """Fork a real shell on a pty, cwd=ROOT. Returns (tid, error)."""
+    import pty as _pty
+    import fcntl as _fcntl
+    try:
+        with TERMS_LOCK:
+            now = time.time()
+            for tid in [k for k, t in TERMS.items() if now - t.get("active", now) > 1800]:
+                _term_kill(tid)
+            if len(TERMS) >= TERM_MAX:
+                return None, f"too many terminals (max {TERM_MAX})"
+        pid, fd = _pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(str(ROOT))
+                os.environ["TERM"] = "xterm-256color"
+                os.environ["PS1"] = "$ "
+                os.execvp("bash", ["bash", "--noprofile", "--norc", "-i"])
+            except Exception:
+                os._exit(1)
+        try:
+            fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
+            _fcntl.fcntl(fd, _fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            import termios as _termios
+            import struct as _struct
+            _fcntl.ioctl(fd, _termios.TIOCSWINSZ,
+                         _struct.pack("HHHH", max(5, rows), max(20, cols), 0, 0))
+        except Exception:
+            pass
+        tid = f"t{int(time.time() * 1000)}"
+        with TERMS_LOCK:
+            TERMS[tid] = {"pid": pid, "fd": fd, "buf": b"", "base": 0,
+                          "active": time.time(), "dead": False}
+        th = threading.Thread(target=_term_reader, args=(tid, fd),
+                              name=f"term-{tid}", daemon=True)
+        th.start()
+        log(f"/api/term create {tid} pid={pid}")
+        return tid, None
+    except Exception as e:
+        return None, str(e)[:200]
+
+
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
@@ -1235,6 +1344,26 @@ class Handler(BaseHTTPRequestHandler):
                     self.end_headers()
                 except Exception:
                     pass
+        elif parsed.path == "/api/term":
+            # Terminal poll: bytes since offset (client tracks total).
+            q = urllib.parse.parse_qs(parsed.query or "")
+            tid = (q.get("poll") or [""])[0]
+            try:
+                off = max(0, int((q.get("offset") or ["0"])[0]))
+            except ValueError:
+                off = 0
+            with TERMS_LOCK:
+                t = TERMS.get(tid)
+                if not t:
+                    self.send_json({"ok": False, "error": "no such terminal"}, 404)
+                    return
+                buf, dead = t["buf"], t.get("dead", False)
+            if off > len(buf):
+                off = 0
+            chunk = buf[off:off + 100_000]
+            self.send_json({"ok": True, "id": tid,
+                            "text": chunk.decode("utf-8", errors="replace"),
+                            "total": len(buf), "alive": not dead})
         elif parsed.path == "/api/session":
             q = urllib.parse.parse_qs(parsed.query or "")
             sid = _safe_sid((q.get("id") or [""])[0])
@@ -1611,6 +1740,60 @@ class Handler(BaseHTTPRequestHandler):
                                 "note": "tracked files restored; untracked files stay"})
             else:
                 self.send_json({"ok": False, "error": "use list|create|diff|restore"}, 400)
+        elif parsed.path == "/api/term":
+            # User's own shell (typed commands need no approval — approval is
+            # for agent actions). Dies with the server; idle terms reaped at 30min.
+            action = str(data.get("action") or "list").strip().lower()
+            if action == "list":
+                with TERMS_LOCK:
+                    self.send_json({"ok": True, "terms": [
+                        {"id": tid, "bytes": len(t["buf"]), "alive": not t.get("dead", False)}
+                        for tid, t in TERMS.items()]})
+            elif action == "create":
+                try:
+                    cols = max(20, min(300, int(data.get("cols") or 100)))
+                    rows = max(5, min(100, int(data.get("rows") or 30)))
+                except ValueError:
+                    cols, rows = 100, 30
+                tid, err = _term_create(cols, rows)
+                if err:
+                    self.send_json({"ok": False, "error": err}, 400
+                                   if "too many" in err else 500)
+                else:
+                    self.send_json({"ok": True, "id": tid}, 202)
+            elif action in ("input", "resize", "kill"):
+                tid = str(data.get("id") or "")
+                with TERMS_LOCK:
+                    t = TERMS.get(tid)
+                if not t:
+                    self.send_json({"ok": False, "error": "no such terminal"}, 404)
+                    return
+                if action == "kill":
+                    _term_kill(tid)
+                    self.send_json({"ok": True, "id": tid})
+                elif action == "resize":
+                    try:
+                        import fcntl as _fcntl
+                        import termios as _termios
+                        import struct as _struct
+                        cols = max(20, min(300, int(data.get("cols") or 100)))
+                        rows = max(5, min(100, int(data.get("rows") or 30)))
+                        _fcntl.ioctl(t["fd"], _termios.TIOCSWINSZ,
+                                     _struct.pack("HHHH", rows, cols, 0, 0))
+                        self.send_json({"ok": True, "id": tid})
+                    except Exception as e:
+                        self.send_json({"ok": False, "error": str(e)[:100]}, 500)
+                else:
+                    try:
+                        os.write(t["fd"], str(data.get("data") or "").encode("utf-8", errors="replace")[:65536])
+                        with TERMS_LOCK:
+                            if tid in TERMS:
+                                TERMS[tid]["active"] = time.time()
+                        self.send_json({"ok": True, "id": tid})
+                    except OSError as e:
+                        self.send_json({"ok": False, "error": f"terminal dead: {e}"}, 410)
+            else:
+                self.send_json({"ok": False, "error": "use list|create|input|resize|kill"}, 400)
         else:
             self.send_response(404)
             self.end_headers()

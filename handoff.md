@@ -85,6 +85,9 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    P1 (2026-10-04): per-msg HH:MM timestamps (full date hover), user Edit + assistant
    ↻ Retry (truncate + resend via send(), no server change), per-block Copy→Copied!,
    ctx footer (est tokens · % · ~$ + fill bar, model-aware windows).
+   P2-split (2026-10-04): prism-lite highlight (py/js/bash/json/sql, string-first
+   tokenizer, zero-dep) + distinct subagent card (🛰️, indented). Mermaid skipped
+   (heavy + XSS surface, rarely used).
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

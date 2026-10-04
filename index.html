@@ -170,6 +170,15 @@ button:active{transform:scale(.96)}
 .msg pre .kw{color:var(--kw);font-weight:600}
 .msg pre .num{color:var(--accent-text)}
 .msg :not(pre)>code{font-family:var(--mono);font-size:12.5px;background:var(--code-bg);padding:0 4px;border-radius:4px}
+/* P2: token colors (prism-lite, dependency-free) + distinct subagent card */
+.tok-k{color:var(--kw);font-weight:600}
+.tok-n{color:var(--accent-text)}
+.tok-s{color:#8fce8f}
+.tok-c{color:var(--faint);font-style:italic}
+.tok-v{color:var(--link)}
+@media (prefers-color-scheme:light){.tok-s{color:#1c7a3d}}
+.tool.sub{border-left:3px solid var(--accent-text);margin-left:14px;width:auto}
+.tool.sub .fname{color:var(--accent-text)}
 .copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
 .msg pre:hover .copybtn{opacity:1}
 @media (hover:none){.copybtn{opacity:1}}
@@ -436,8 +445,10 @@ function renderTool(x,quiet){
     t.appendChild(d);if(!quiet)scrollIfPinned();
     return;
    }
-   let f=familyOf(x.tool);
+    let f=familyOf(x.tool);
+   if(x.tool==='subagent')f={icon:'🛰️',label:'subagent'};
   let d=document.createElement('div');d.className='tool';
+  if(x.tool==='subagent')d.classList.add('sub');
   let res=String(x.result||'');
   if(/\b(error|failed|failure|not found|traceback|exception)\b/i.test(res.slice(0,300))&&!/\b(0 errors?|no errors?|error-free|exit 0)\b/i.test(res.slice(0,300)))d.classList.add('err');
  let head=document.createElement('div');head.className='tool-head';
@@ -565,16 +576,42 @@ function inline(s){
 }
 function md(src){
  let fences=[];
- // dependency-free keyword highlight for fenced code (runs on escaped text;
- // keywords never collide with &amp;/&lt;/&gt;/&quot; entities, so no breakage)
- function hi(s){
-  s=String(s).replace(/\b(const|let|var|function|return|if|else|for|while|import|from|export|def|class|print|await|async|try|except|raise|new|true|false|null|None|True|False|self|this)\b/g,'<span class="kw">$1</span>');
-  s=s.replace(/(?<![\w&])(\d+(?:\.\d+)?)(?![\w;])/g,'<span class="num">$1</span>');
-  return s;
- }
+  // prism-lite: string/comment-first tokenizer per language, so keywords
+  // inside strings are never highlighted. Zero deps, offline-safe.
+  function hlRun(code,re,cls){
+   var out='',last=0,m;re.lastIndex=0;
+   while((m=re.exec(code))){
+    if(m.index>last)out+=esc(code.slice(last,m.index));
+    var c='tok-k',t=m[0];
+    for(var i=1;i<m.length;i++){if(m[i]!==undefined){c=cls[i]||'tok-k';t=m[i];break;}}
+    out+='<span class="'+c+'">'+esc(t)+'</span>';
+    last=m.index+m[0].length;
+    if(!m[0].length)re.lastIndex++;
+   }
+   if(last<code.length)out+=esc(code.slice(last));
+   return out;
+  }
+  function hl(code,lang){
+   code=String(code);lang=String(lang||'').toLowerCase();
+   var alias={py:'python',js:'javascript',ts:'javascript',jsx:'javascript',tsx:'javascript',sh:'bash',shell:'bash',zsh:'bash',yml:'txt',yaml:'txt'};
+   lang=alias[lang]||lang;
+   var KW={
+    python:'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|True|False|None|self|cls',
+    javascript:'break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|function|if|import|in|instanceof|let|new|return|super|switch|this|throw|try|typeof|var|void|while|with|yield|async|await|true|false|null|undefined',
+    bash:'if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|in|time|export|local|return|exit|set|source|alias|echo',
+    sql:'select|from|where|join|left|right|inner|outer|full|on|group|by|order|having|insert|into|values|update|set|delete|create|table|alter|drop|as|and|or|not|null|distinct|limit|offset|union|all|exists|like|between|is|case|when|then|else|end'};
+   var re=null,cls=[null,'tok-c','tok-s','tok-n','tok-k'];
+   if(lang==='python')re=new RegExp("(#[^\\n]*)|('''[\\s\\S]*?(?:'''|$)|\\\"\\\"\\\"[\\s\\S]*?(?:\\\"\\\"\\\"|$)|'(?:[^'\\\\\\n]|\\\\.)*'|\"(?:[^\"\\\\\\n]|\\\\.)*\")|\\b(\\d+(?:\\.\\d+)?)\\b|\\b("+KW.python+")\\b","g");
+   else if(lang==='javascript')re=new RegExp("(//[^\\n]*|/\\*[\\s\\S]*?(?:\\*/|$))|('(?:[^'\\\\\\n]|\\\\.)*'|\"(?:[^\"\\\\\\n]|\\\\.)*\"|`(?:[^`\\\\]|\\\\.)*`)|\\b(\\d+(?:\\.\\d+)?)\\b|\\b("+KW.javascript+")\\b","g");
+   else if(lang==='bash'){re=new RegExp("('(?:[^'])*'|\"(?:[^\"\\\\]|\\\\.)*\")|(\\$[\\w#?@$!*]+|\\$\\{[^}]*\\})|(#[^\\n]*)|\\b(\\d+(?:\\.\\d+)?)\\b|\\b("+KW.bash+")\\b","g");cls=[null,'tok-s','tok-v','tok-c','tok-n','tok-k'];}
+   else if(lang==='json'){re=new RegExp("(\"(?:[^\"\\\\]|\\\\.)*\"(?=\\s*:))|(\"(?:[^\"\\\\]|\\\\.)*\")|\\b(\\d+(?:\\.\\d+)?)\\b|\\b(true|false|null)\\b","g");cls=[null,'tok-k','tok-s','tok-n','tok-k'];}
+   else if(lang==='sql')re=new RegExp("(--[^\\n]*)|('(?:[^']|'')*')|\\b(\\d+(?:\\.\\d+)?)\\b|\\b("+KW.sql+")\\b","gi");
+   if(!re)return esc(code);
+   return hlRun(code,re,cls);
+  }
  // extract fenced blocks first so inner markdown chars are untouched
  src=String(src).replace(/```(\w*)\n([\s\S]*?)(```|$)/g,(m,lang,code)=>{
-  fences.push('<pre><button class="copybtn">Copy</button><code class="lang-'+esc(lang||'txt')+'">'+hi(esc(code.replace(/\n$/,'')))+'</code></pre>');
+   fences.push('<pre><button class="copybtn">Copy</button><code class="lang-'+esc(lang||'txt')+'">'+hl(code.replace(/\n$/,''),lang)+'</code></pre>');
   return '\u0000'+(fences.length-1)+'\u0000';
  });
  let lines=src.split('\n'),html='',i=0,list=null;

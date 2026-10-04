@@ -91,6 +91,11 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    Mermaid (2026-10-04, on request): ```mermaid fences render to SVG via lazy CDN
    (pinned 11.17.2 + SRI, `securityLevel:strict`); code fallback offline; 3.5MB
    never vendored, loads once on first diagram.
+   Sessions batch (2026-10-04): ⋯ menu (pin/archive/duplicate/rename/export/
+   delete), ★ pin sort, archive + toggle, collapsible date groups, tab title,
+   #tag chips + click-filter, content search, JSON export/import, ctx click for
+   in/out detail. Skipped: projects (tags cover it), share link (localhost),
+   CLI bridge (agent.py doesn't log store.db).
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

@@ -76,8 +76,21 @@ aside[data-slot="sessions-sidebar"] h4{margin:4px 2px;color:var(--muted);font-si
 .sess .x{color:var(--faint);border:none;background:none;padding:2px 6px}
 .sess .x:hover{color:var(--error)}
 .sess .time{font-size:11px;color:var(--faint);white-space:nowrap}
-.ghead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:8px 4px 2px}
+.ghead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:8px 4px 2px;cursor:pointer;user-select:none}
+.ghead:hover{color:var(--text)}
 .sess-empty{font-size:13px;color:var(--muted);padding:8px 4px}
+.sess.archived{opacity:.55}
+.sess .star{color:var(--think);font-size:12px}
+.tagchip{font-size:10px;background:var(--accent-bg,var(--layer-2));border:1px solid var(--border-strong);border-radius:8px;padding:0 6px;margin-left:4px;cursor:pointer;white-space:nowrap}
+.tagchip:hover{background:var(--hover)}
+#sessTools{display:flex;gap:6px}
+#sessTools button{flex:1;font-size:11px;padding:4px}
+#sessTools button.on{border-color:var(--accent-text);color:var(--accent-text)}
+#sessMenu{position:fixed;z-index:50;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:8px;min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,.35);animation:pop-in .12s ease-out}
+#sessMenu button{display:block;width:100%;text-align:left;border:none;background:none;font-size:13px;padding:8px 12px;border-radius:0}
+#sessMenu button:hover{background:var(--hover)}
+#sessMenu button.danger{color:var(--error)}
+#ctxTxt{cursor:pointer}
 /* v2 empty state: centered, no art, title + desc + CTA */
 .empty-state{text-align:center;padding-top:52px;display:flex;flex-direction:column;gap:12px;align-items:center}
 .empty-state .et{font-size:13px;font-weight:500}
@@ -225,7 +238,9 @@ button:active{transform:scale(.96)}
 <div id="layout">
 <aside data-slot="sessions-sidebar">
 <h4>Sessions</h4>
-<input id="sessSearch" placeholder="Search sessions" autocomplete="off" style="width:100%">
+<input id="sessSearch" placeholder="Search title, #tag, content" autocomplete="off" style="width:100%">
+<div id="sessTools"><button id="importBtn" title="Import session from JSON">Import</button><button id="archBtn" title="Show/hide archived">Archived</button></div>
+<input type="file" id="importFile" accept=".json,application/json" style="display:none">
 <div id="sessList"></div>
 </aside>
 <main data-slot="session-chat-panel">
@@ -316,28 +331,102 @@ function exportSession(id){
  a.download='session-'+id+'.md';a.click();
  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
+let showArchived=false;try{showArchived=localStorage.getItem('formy.showArchived')==='1';}catch(e){}
+let collapsedG={};try{collapsedG=JSON.parse(localStorage.getItem('formy.groups.v1')||'{}');}catch(e){collapsedG={};}
+function parseTags(title){let tags=[];let text=String(title||'Untitled').replace(/#([\w-]+)/g,(m,t)=>{tags.push(t);return '';});text=text.replace(/\s+/g,' ').trim()||'Untitled';return{text,tags};}
+function syncTitle(){try{document.title=(cur().title||'Untitled').slice(0,60)+' — formyproject agent';}catch(e){}}
+function closeSessMenu(){document.querySelectorAll('#sessMenu').forEach(x=>x.remove());}
+function sessMenu(btn,id){
+ closeSessMenu();
+ let s=sessions[id];if(!s)return;
+ let m=document.createElement('div');m.id='sessMenu';
+ let items=[
+  [s.pinned?'Unpin ★':'Pin ★',()=>{s.pinned=!s.pinned;s.updated=Date.now();saveStore();renderSessions();}],
+  [s.archived?'Unarchive':'Archive',()=>{s.archived=!s.archived;s.updated=Date.now();saveStore();renderSessions();}],
+  ['Duplicate',()=>dupSession(id)],
+  ['Rename',()=>{let n=prompt('Rename session (use #tag for tags)',s.title);if(n){s.title=n.slice(0,80);s.updated=Date.now();saveStore();renderSessions();}}],
+  ['Export Markdown',()=>exportSession(id)],
+  ['Export JSON',()=>exportJSON(id)],
+  ['Delete',()=>{if(!confirm('Delete session "'+(s.title||'Untitled')+'"?'))return;delete sessions[id];if(id===activeId||!sessions[activeId]){activeId=Object.keys(sessions)[0]||('s-'+Date.now());if(!sessions[activeId])sessions[activeId]={title:'New session',history:[],model:'',updated:Date.now()};}saveStore();renderSessions();rerenderMsgs();},true],
+ ];
+ items.forEach(([label,fn,danger])=>{let b=document.createElement('button');b.textContent=label;if(danger)b.className='danger';b.onclick=e=>{e.stopPropagation();closeSessMenu();fn();};m.appendChild(b);});
+ document.body.appendChild(m);
+ let r=btn.getBoundingClientRect();
+ m.style.top=Math.min(window.innerHeight-m.offsetHeight-8,r.bottom+4)+'px';
+ m.style.left=Math.max(8,Math.min(window.innerWidth-180,r.left-140))+'px';
+ setTimeout(()=>document.addEventListener('click',closeSessMenu,{once:true}),0);
+}
+function dupSession(id){
+ let s=sessions[id];if(!s)return;
+ let nid='s-'+Date.now();
+ try{sessions[nid]=JSON.parse(JSON.stringify({title:(s.title||'Untitled')+' (copy)',history:s.history||[],tools:(s.tools||[]).slice(-200),model:s.model||'',updated:Date.now(),pinned:false,archived:false}));}
+ catch(e){return;}
+ activeId=nid;saveStore();renderSessions();rerenderMsgs();
+}
+function exportJSON(id){
+ let s=sessions[id];if(!s)return;
+ let a=document.createElement('a');
+ a.href=URL.createObjectURL(new Blob([JSON.stringify({title:s.title,history:s.history||[],tools:s.tools||[],model:s.model||'',updated:s.updated||Date.now()},null,1)],{type:'application/json'}));
+ a.download='session-'+id+'.json';a.click();
+ setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+function importJSON(file){
+ let r=new FileReader();
+ r.onload=()=>{
+  try{
+   let d=JSON.parse(r.result);
+   if(!d||!Array.isArray(d.history))throw new Error('bad shape');
+   let nid='s-'+Date.now();
+   sessions[nid]={title:String(d.title||'Imported').slice(0,80),history:d.history.slice(-60),tools:Array.isArray(d.tools)?d.tools.slice(-200):[],model:String(d.model||''),updated:Date.now(),pinned:false,archived:false};
+   activeId=nid;saveStore();renderSessions();rerenderMsgs();
+  }catch(e){alert('Import failed: not a session JSON ('+e.message+')');}
+ };
+ r.readAsText(file);
+}
 function renderSessions(){
+ syncTitle();
  let box=document.getElementById('sessList');box.innerHTML='';
+ let ab=document.getElementById('archBtn');
+ let archN=Object.keys(sessions).filter(id=>sessions[id].archived).length;
+ if(ab){ab.textContent='Archived'+(archN?' ('+archN+')':'');ab.classList.toggle('on',showArchived);}
  let q=((document.getElementById('sessSearch')||{}).value||'').toLowerCase();
- let ids=Object.keys(sessions).sort((a,b)=>(sessions[b].updated||0)-(sessions[a].updated||0));
- if(q)ids=ids.filter(id=>(sessions[id].title||'').toLowerCase().includes(q));
+ let ids=Object.keys(sessions).filter(id=>{
+  let s=sessions[id];
+  if(s.archived&&!showArchived&&id!==activeId)return false;
+  if(!q)return true;
+  if(q[0]==='#'){let pt=parseTags(s.title);return pt.tags.some(t=>('#'+t).toLowerCase().indexOf(q)===0);}
+  if((s.title||'').toLowerCase().includes(q))return true;
+  return (s.history||[]).some(h=>String(h.content||'').toLowerCase().includes(q));
+ });
+ // pinned first, then recent
+ ids.sort((a,b)=>((sessions[b].pinned?1:0)-(sessions[a].pinned?1:0))||((sessions[b].updated||0)-(sessions[a].updated||0)));
   if(!ids.length){let e2=document.createElement('div');e2.className='sess-empty';e2.textContent=q?'No sessions found for "'+q+'"':'Nothing here yet';box.appendChild(e2);return;}
  let groups={};
  ids.forEach(id=>{(groups[dayGroup(sessions[id].updated)]=groups[dayGroup(sessions[id].updated)]||[]).push(id);});
  ['Today','Yesterday','Older'].forEach(g=>{
   if(!groups[g]||(!groups[g].length))return;
-  if(ids.length>2||g!=='Today'){let gh=document.createElement('div');gh.className='ghead';gh.textContent=g;box.appendChild(gh);}
+  if(ids.length>2||g!=='Today'){
+   let gh=document.createElement('div');gh.className='ghead';gh.setAttribute('tabindex','0');
+   gh.textContent=(collapsedG[g]?'▸ ':'▾ ')+g+' ('+groups[g].length+')';
+   gh.title='Collapse/expand';
+   gh.onclick=()=>{collapsedG[g]=!collapsedG[g];try{localStorage.setItem('formy.groups.v1',JSON.stringify(collapsedG));}catch(e){}renderSessions();};
+   gh.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();gh.onclick();}};
+   box.appendChild(gh);
+   if(collapsedG[g])return;
+  }
   groups[g].forEach(id=>{
-   let d=document.createElement('div');d.className='sess'+(id===activeId?' active':'');
-   let t=document.createElement('span');t.className='t';t.textContent=sessions[id].title||'Untitled';t.title='double-click to rename';
-   t.ondblclick=e=>{e.stopPropagation();let n=prompt('Rename session',sessions[id].title);if(n){sessions[id].title=n.slice(0,80);saveStore();renderSessions();}};
+   let d=document.createElement('div');d.className='sess'+(id===activeId?' active':'')+(sessions[id].archived?' archived':'');
+   if(sessions[id].pinned){let st=document.createElement('span');st.className='star';st.textContent='★';st.title='Pinned';d.appendChild(st);}
+   let pt=parseTags(sessions[id].title);
+   let t=document.createElement('span');t.className='t';t.textContent=pt.text;t.title=(sessions[id].title||'Untitled')+' — double-click to rename';
+   t.ondblclick=e=>{e.stopPropagation();let n=prompt('Rename session (use #tag for tags)',sessions[id].title);if(n){sessions[id].title=n.slice(0,80);saveStore();renderSessions();}};
+   d.appendChild(t);
+   pt.tags.forEach(tag=>{let c=document.createElement('span');c.className='tagchip';c.textContent='#'+tag;c.title='Filter by #'+tag;c.onclick=e=>{e.stopPropagation();document.getElementById('sessSearch').value='#'+tag;renderSessions();};d.appendChild(c);});
    let tm=document.createElement('span');tm.className='time';tm.textContent=relTime(sessions[id].updated);
-   let e=document.createElement('button');e.className='x';e.textContent='⤓';e.title='Export…';
-   e.onclick=ev=>{ev.stopPropagation();exportSession(id);};
-   let x=document.createElement('button');x.className='x';x.textContent='×';x.title='Delete…';
-   x.onclick=e=>{e.stopPropagation();if(!confirm('Delete session "'+(sessions[id].title||'Untitled')+'"?'))return;delete sessions[id];if(id===activeId||!sessions[activeId]){activeId=Object.keys(sessions)[0]||('s-'+Date.now());if(!sessions[activeId])sessions[activeId]={title:'New session',history:[],model:'',updated:Date.now()};}saveStore();renderSessions();rerenderMsgs();};
+   let more=document.createElement('button');more.className='x';more.textContent='⋯';more.title='Session actions';
+   more.onclick=e=>{e.stopPropagation();sessMenu(more,id);};
    d.onclick=()=>{activeId=id;saveStore();renderSessions();rerenderMsgs();};
-   d.appendChild(t);d.appendChild(tm);d.appendChild(e);d.appendChild(x);box.appendChild(d);
+   d.appendChild(tm);d.appendChild(more);box.appendChild(d);
   });
  });
 }
@@ -366,7 +455,10 @@ function maybeTip(){
  x.onclick=()=>{try{localStorage.setItem('formy.tip.dismissed','1');}catch(e){}p.remove();};
  p.appendChild(s);p.appendChild(x);document.body.appendChild(p);
 }
-function newSession(){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:selectedModel,updated:Date.now()};saveStore();renderSessions();rerenderMsgs();}
+function newSession(){activeId='s-'+Date.now();sessions[activeId]={title:'New session',history:[],model:selectedModel,updated:Date.now(),pinned:false,archived:false};saveStore();renderSessions();rerenderMsgs();}
+document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
+document.getElementById('importFile').addEventListener('change',e=>{if(e.target.files[0])importJSON(e.target.files[0]);e.target.value='';});
+document.getElementById('archBtn').onclick=()=>{showArchived=!showArchived;try{localStorage.setItem('formy.showArchived',showArchived?'1':'0');}catch(e){}renderSessions();};
 document.getElementById('newBtn').onclick=newSession;
 document.getElementById('livePill').onclick=jumpLive;
 document.getElementById('sessSearch').addEventListener('input',renderSessions);
@@ -749,12 +841,16 @@ function updateCtx(){
   let tok=Math.ceil((chars+draft+sys)/4);
   let win=ctxWin(typeof selectedModel!=='undefined'?selectedModel:'');
   let pct=Math.min(100,Math.round(tok/win*100));
-  let cost=(Math.ceil((inC+sys)/4)/1e6*0.5+Math.ceil(outC/4)/1e6*2);
+  let inTok=Math.ceil((inC+sys)/4),outTok=Math.ceil(outC/4);
+  let cost=(inTok/1e6*0.5+outTok/1e6*2);
+  let detail=false;try{detail=localStorage.getItem('formy.ctxDetail')==='1';}catch(e){}
+  let fmt=n=>n>=1000?(n/1000).toFixed(1)+'k':String(n);
   let txt=document.getElementById('ctxTxt'),fill=document.getElementById('ctxFill');
-  if(txt){txt.textContent='~'+(tok>=1000?(tok/1000).toFixed(1)+'k':tok)+' tok · '+pct+'% · ~$'+cost.toFixed(3)+' (est)';txt.title='Window ~'+(win/1000)+'k ('+selectedModel+') · cost is a rough estimate';}
+  if(txt){txt.textContent=detail?('in ~'+fmt(inTok)+' · out ~'+fmt(outTok)+' · ~$'+cost.toFixed(3)):('~'+fmt(tok)+' tok · '+pct+'% · ~$'+cost.toFixed(3)+' (est)');txt.title='Window ~'+(win/1000)+'k ('+selectedModel+') · cost is a rough estimate · click for in/out detail';}
   if(fill)fill.style.width=pct+'%';
  }catch(e){}
 }
+try{document.getElementById('ctxTxt').onclick=()=>{try{localStorage.setItem('formy.ctxDetail',localStorage.getItem('formy.ctxDetail')==='1'?'0':'1');}catch(e){}try{updateCtx();}catch(e){}};}catch(e){}
 function addMsg(role,text,silent,ts,hidx){
  let box=document.getElementById('msgs');
  box.querySelectorAll('.empty-state').forEach(x=>x.remove());

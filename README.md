@@ -33,7 +33,7 @@ no bundler, no framework, just `server.py` + `index.html`.
 | Cron while offline | No | Yes | Yes | Yes (server-up only) |
 | Self-saving skills | No | Yes | Yes | Writable (`skills/`) |
 | Provider-agnostic | Yes | Yes | Yes | MaxPlus only |
-| Voice input | — | — | Yes | Yes (Web Speech mic) |
+| Voice input | — | — | Yes | Yes (Web Speech mic + live wave card) |
 | Multi-project workspaces | — | — | Yes (Spaces) | Yes (Spaces-lite switcher) |
 | Profiles | — | — | Yes | No (out of scope) |
 
@@ -66,12 +66,12 @@ hard-refresh (`Cmd+Shift+R`, Safari: `Option+Cmd+R`).
 - Stop button in the composer (plus `Esc`) interrupts mid-generation, keeping partial text
 - Tool call cards inline, grouped per turn into a collapsible **Activity** group
 - Thinking/reasoning in collapsible gold cards (model-driven: GLM emits it, others may not)
-- Approval gate for dangerous shell commands (deny on web, prompt on CLI TTY)
+- Approval gate for dangerous shell commands (allow once/session/always/deny on web, prompt on CLI TTY)
 - Markdown rendering with syntax-highlighted code blocks + copy button
 - Pinned scroll-follow: reading history mid-run never yanks you; a `↓` pill jumps back
 - Per-message timestamps, user Edit + assistant ↻ Retry, per-block copy buttons
 - `workspace://` links open files in the preview pane; ```mermaid fences render inline
-- Composer: `/` slash commands (`/help /clear /compact /model /new /usage /theme /skin /workspace`), voice mic, 📎 file attach, context footer (tokens · % · ~$)
+- Composer: `/` slash commands (`/help /clear /compact /model /new /usage /theme /skin /workspace`), voice mic, file attach, context footer (tokens · % · ~$)
 - Subagent turns get their own distinct card
 
 ### Sessions

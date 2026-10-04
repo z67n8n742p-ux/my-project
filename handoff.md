@@ -12,6 +12,13 @@ per-turn Activity groups, Send/Stop), opt-in token auth, real MCP stdio client,
 README in hermes-webui shape + UI screenshot.
 Plus 2026-10-04 Hermes-gap pass (fixes 1–5): two-phase chat, approval cards,
 session LIMITs, compact echo guard, streaming perf.
+Plus 2026-10-04 late batch (all committed): Spaces-lite project switcher
+(`GET+POST /api/workspaces`, per-project checkpoints, agent workspace note),
+12 skins + font-size axis, 📎 chat attachments (`POST /api/attach` vault),
+cron `update` verb + completion toasts, `/skin` + `/workspace` slash aliases,
+emoji de-slop (mono badges, text buttons), mic wave card (Web Audio analyser),
+stability pass (root delete/rename guards, TERMS_LOCK fix, threaded cron tick,
+180s LLM timeouts, atomic state writes, RUNS prune + channel caps).
 
 Upstreams (remote only, NOT vendored): `github.com/anomalyco/opencode/tree/v2`
 (tools + loop + motion), `github.com/nousresearch/hermes-agent` (architecture patterns),
@@ -19,17 +26,20 @@ Upstreams (remote only, NOT vendored): `github.com/anomalyco/opencode/tree/v2`
 Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borrowable leftovers.
 
 ## Layout
-- `server.py` (1305) — backend (`ThreadingHTTPServer`, `FORMY_HOST` default `127.0.0.1:8000`).
+- `server.py` (2097) — backend (`ThreadingHTTPServer`, `FORMY_HOST` default `127.0.0.1:8000`).
   Endpoints: `GET /`, `GET /api/models`, `GET /api/system`, `POST /api/system`,
   `POST /api/chat` (blocking, compat), `POST /api/chat/start` (202, two-phase),
   `GET /api/chat/result?run=<id>`, `POST /api/steer`, `POST /api/interrupt` (Esc/Stop),
   `GET /api/approval/pending?run=<id>`, `POST /api/approval/respond`,
    `GET /api/progress?run=<id>`, `GET /api/event?run=<id>` (SSE),
    `GET /api/session?id=<session-id>`, `GET /api/skills`,
+   `GET /api/workspaces`, `POST /api/workspaces` (list/add/use/remove),
+   `POST /api/attach` (per-session vault under `.sessions/attachments/`),
    `POST /api/compact` (summary via SUMMARY_SYSTEM),
    workspace: `GET /api/files?path=` (+git at root), `GET /api/file?path=`,
    `GET /api/raw?path=` (+`&download=1`), `POST /api/file|/api/mkdir|
-   /api/delete|/api/rename` (ROOT containment + `_sensitive_path`).
+   /api/delete|/api/rename` (active-root containment + root delete/rename
+   refusal + `_sensitive_path`).
   Retry 1+4 (429/5xx), `_bound_for_model` (spill full to `.jobs/`),
   `_drain_steer`, run/item idempotency (+ SQLite cross-restart), per-call isolation,
   `_maybe_compact` per step + `_strip_compact_echo` on replies, boot recovery
@@ -38,8 +48,14 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
   `think`/`think_full` + `mark` + `approval` + `result` + `data` + `done`,
   15s heartbeat, replays pens + pending approval on reattach.
   `_chat_admit` shared by blocking + start; `_execute_chat` core never raises.
-  `_model_chain` + fallback (`FORMY_FALLBACK_MODELS`), parallel `run_tool_calls`
-  (order-restored, ctx-aware), `_cron_tick` daemon (30s) + overlap guard.
+  `_model_chain` + fallback (`FORMY_FALLBACK_MODELS`), OpenAI `timeout=180`,
+  parallel `run_tool_calls`
+  (order-restored, ctx-aware), `_cron_tick` daemon (30s, one thread per due job)
+  + overlap guard.
+  Helpers: `_ws_active()` (Spaces-lite root, default ROOT), `_atomic_write`
+  (tmp+rename for workspaces/checkpoints), `_prune_runs` (10min, on insert +
+  progress), `_emit_run` channel cap 2000. `send_json` swallows broken pipes;
+  `serve_forever` reports port-in-use cleanly.
   Streaming: `_chat_stream_with_retry` + `_consume_chat_stream` (token/reasoning
   deltas, `mark` step/restart, per-chunk interrupt, partial kept). Thinking persisted
   per step as `thinking` tool entry. POST cap 10MB → 413. Messages table pruned to
@@ -71,12 +87,13 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
   no-shell remote. Default local, silent fallback.
 - `prompt.py` (82) — `SOUL.md` + `AGENTS.md` + UI text + memory snapshot
   (**live** re-read every turn). Never raises; `/api/system` edits `system_prompt.md`.
-- `cron.py` (163) — `.cron/jobs.json`, `every <N>s|m|h` + `daily@HH:MM`,
-  CLI (`list|add|remove`), transcripts `.cron/runs/`, sessions `cron-<id>`.
+- `cron.py` (267) — `.cron/jobs.json` (atomic tmp+rename writes), `every <N>s|m|h` + `daily@HH:MM`,
+  CLI (`list|add|remove|pause|resume|update`), transcripts `.cron/runs/`, sessions `cron-<id>`.
   Max 20 jobs, prompt cap 2000, min `every 60s`. Daemon = server-up only.
-- `index.html` (865) — whole frontend, zero deps. Tools inline in chat grouped per
-  turn into collapsible **Activity** (full-width cards, inner-scroll bodies, err
-  auto-open). Pinned scroll-follow (reads mid-run never yank; `↓` pill fades in/out;
+- `index.html` (2243) — whole frontend, zero deps. No emoji: mono badges
+  (`doc sh src web agt tool sub thk`), text buttons (Files/Prefs/Mic/File/Snaps).
+  Tools inline in chat grouped per turn into collapsible **Activity** (collapsed by
+  default, `Activity: N tools`). Pinned scroll-follow (reads mid-run never yank; `↓` pill fades in/out;
   `stableMutate` holds place on re-render). Live token bubbles (10fps incremental
   appends, caret span, md on done), thinking cards (3fps, skipped when collapsed),
   approval card (pop-in, allow once/session/always/deny + 1.5s pending poll),
@@ -115,11 +132,12 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    restore via git, store `.jobs/checkpoints.json`; create uses `git add -u`
    so untracked files stay out), send-key toggle (Enter vs ⌘/Ctrl+Enter),
    explicit light/dark/system theme, ⧉ collapse-all tools. Server restarted.
-   Final three (2026-10-04): voice mic (Web Speech, frontend-only, hidden if
-   unsupported), terminal Tab (real pty bash, ANSI colors, 1s poll, typed cmds
-   need no approval — approval is for agent actions; max 4, idle reap 30min,
-   dies with server), Skills tab (list/search/preview/edit/new/delete on
-   existing file endpoints, same skills/ dir). Server restarted (term).
+    Final three (2026-10-04): voice mic (Web Speech, frontend-only, hidden if
+    unsupported) + wave card (Web Audio analyser, red dot + live wave + timer,
+    `no mic` fallback), terminal Tab (real pty bash, ANSI colors, 1s poll, typed cmds
+    need no approval — approval is for agent actions; max 4, idle reap 30min,
+    New kills old pty, dies with server), Skills tab (list/search/preview/edit/new/delete on
+    existing file endpoints, same skills/ dir). Server restarted (term).
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.
@@ -130,19 +148,20 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
 - `.env` — keys (git-ignored). `.env.example` documents all `FORMY_*` + `MCP_TIMEOUT`.
 - `opencode-v2-explained.md` (223) — v2 guide + Hermes comparisons + file map.
 - `todo-app/` — sample app, 13/13 green (`cd todo-app && python3 -m unittest`).
-- GitHub: `https://github.com/z67n8n742p-ux/my-project.git` (branch `main`).
-  Uncommitted 2026-10-04: `server.py` `tools.py` `approval.py` `index.html`
-  (fixes 1–5 + perf + polish). `markdown-test.md` intentionally untracked/local.
+- GitHub: `https://github.com/z67n8n742p-ux/my-project.git` (branch `main`,
+  pushed through `93b9d12` stability pass).
+  `markdown-test.md` intentionally untracked/local.
 
 ## Key facts
-- Server RUNNING (PID 69623, `auth=off, loopback only`, new code).
+- Server RUNNING (PID 85189, `auth=off, loopback only`, stability-pass code).
   Start: `NO_BROWSER=1 PORT=8000 nohup python3 server.py > server.restart.log 2>&1 &`,
-  stop: `pkill -f server.py`. Restart needed for `server.py`/`tools.py` changes only.
+  stop: `pkill -f server.py`. Restart needed for `server.py`/`tools.py`/`cron.py` changes only.
 - Frontend served from disk per request → hard-refresh (`Cmd+Shift+R`,
   Safari `Option+Cmd+R`) after UI edits.
 - SQLite `.sessions/store.db` — tables `runs` + `messages` + `messages_fts` (FTS5,
   trigger-kept; NO `claims` table — idempotency is `runs.run_id` + JSONL transcripts).
-  Messages pruned to newest 20k on every turn; runs pruned at 24h on boot.
+  Messages pruned to newest 20k on every turn; RUNS pruned at 10min on insert +
+  progress; SSE channels capped at 2000 entries per run.
 - Interrupt is cooperative between steps AND mid-generation (partial kept +
   `*(interrupted by user)*`); never mid-tool. Approval wait (≤180s) ends at next
   step boundary on interrupt.
@@ -182,12 +201,11 @@ NO_BROWSER=1 PORT=8000 python3 server.py   # open http://localhost:8000
 - User has ADHD → keep reports short, tables over prose.
 
 ## Suggested next steps
-- Commit + push the 2026-10-04 batch (fixes 1–5, perf, polish).
 - Turn journal (#6, optional) — audit trail separate from transcript; only if forensics wanted.
-- `cron` pause/resume verbs (only lifecycle gap vs Hermes `cronjob`).
-- `/skin` + `/theme` slash commands (picker exists in titlebar).
-- Context usage ring in composer footer.
-- Hermes leftovers worth stealing: Control Center modal, session projects/tags,
-  workspace file browser, extension dir (`registerHermesSkin`).
+- Deferred hardening (known, needs redesign not patch): approval cards keyed per
+  run (4 parallel dangerous calls can collide), MCP/bg-job fd cleanup,
+  `read`/`extract` size caps, mermaid SVG sanitizer, RUNS_LOCK across SQLite I/O.
+- Hermes leftovers still skipped: session projects (tags cover it), share link
+  (localhost), extension dir (`registerHermesSkin`), CLI bridge logging.
 - Decided against: `bootstrap.py` (2 commands work fine), gateway/Telegram, plugins, ACP,
-  cloud backends, training, voice, workspace browser, Tasks panel, imagegen/TTS/X-search.
+  cloud backends, training, imagegen/TTS/X-search.

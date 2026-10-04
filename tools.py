@@ -1284,7 +1284,7 @@ def run_tool_calls(calls, ctx=None):
 # ---------- cron (Hermes scheduled-jobs pattern, laptop-minimal) ----------
 def cron(action: str = "list", schedule: str = "", prompt: str = "",
          model: str = "", job_id: str = "") -> str:
-    """Scheduled agent jobs. action=list|add|remove|pause|resume. Server tick runs due jobs."""
+    """Scheduled agent jobs. action=list|add|remove|pause|resume|update. Server tick runs due jobs."""
     try:
         import cron as _cron
         return _cron.cron_tool(action, schedule, prompt, model, job_id or schedule)
@@ -1739,7 +1739,7 @@ TOOLS_SPECS = [
     {"type": "function", "function": {"name": "skill", "description": "Load a SKILL.md file by id or name.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "path": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "skill_manage", "description": "Create/patch/delete agent skills (procedural memory). action=list|view|create|patch|delete. Prefer patch for updates.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "name": {"type": "string"}, "content": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "todowrite", "description": "Manage todos. action=list|set|add|done|clear.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "todos": {"type": "string"}}}}},
-    {"type": "function", "function": {"name": "cron", "description": "Scheduled agent jobs run by the server. action=list|add|remove|pause|resume. add needs schedule (`every 1h`, `daily@09:00`) + prompt.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "schedule": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}, "job_id": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "cron", "description": "Scheduled agent jobs run by the server. action=list|add|remove|pause|resume|update. add needs schedule (`every 1h`, `daily@09:00`) + prompt.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "schedule": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}, "job_id": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "memory", "description": "Curated persistent memory. action=list|add|replace|remove. target=memory|user.", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "target": {"type": "string"}, "content": {"type": "string"}, "old_text": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "session_search", "description": "Search past sessions (FTS5, no LLM cost). Returns snippets with session ids.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, "role_filter": {"type": "string"}}}, "required": ["query"]}},
     {"type": "function", "function": {"name": "webfetch", "description": "Fetch URL content (text/markdown/html).", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "format": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["url"]}}},

@@ -2,7 +2,7 @@
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>formyproject agent</title>
-<script>try{var _sk=localStorage.getItem('formy.skin');if(_sk)document.documentElement.dataset.skin=_sk;var _th=localStorage.getItem('formy.theme');if(_th&&_th!=='system')document.documentElement.dataset.theme=_th;}catch(e){}</script>
+<script>try{var _sk=localStorage.getItem('formy.skin');if(_sk)document.documentElement.dataset.skin=_sk;var _th=localStorage.getItem('formy.theme');if(_th&&_th!=='system')document.documentElement.dataset.theme=_th;var _ft=localStorage.getItem('formy.font');if(_ft)document.documentElement.dataset.font=_ft;}catch(e){}</script>
 <style>
 /* Theme tokens (v2-desktop inspired: flat CSS vars, dark default + light override) */
 :root{
@@ -59,6 +59,19 @@
 @media (prefers-color-scheme:dark){:root[data-skin="sisyphus"]{--accent:#A78BFA;--accent-hover:#8B5CF6;--accent-bg:rgba(167,139,250,0.08);--accent-bg-strong:rgba(167,139,250,0.15);--accent-text:#A78BFA;}}
 :root[data-skin="charizard"]{--accent:#EA580C;--accent-hover:#C2410C;--accent-bg:rgba(234,88,12,0.08);--accent-bg-strong:rgba(234,88,12,0.15);--accent-text:#C2410C;}
 @media (prefers-color-scheme:dark){:root[data-skin="charizard"]{--accent:#FB923C;--accent-hover:#F97316;--accent-bg:rgba(251,146,60,0.08);--accent-bg-strong:rgba(251,146,60,0.15);--accent-text:#FB923C;}}
+:root[data-skin="sienna"]{--accent:#A9714B;--accent-hover:#8A5A3B;--accent-bg:rgba(169,113,75,0.08);--accent-bg-strong:rgba(169,113,75,0.15);--accent-text:#8A5A3B;}
+@media (prefers-color-scheme:dark){:root[data-skin="sienna"]{--accent:#D99A6C;--accent-hover:#C17C5B;--accent-bg:rgba(217,154,108,0.08);--accent-bg-strong:rgba(217,154,108,0.15);--accent-text:#D99A6C;}}
+:root[data-skin="catppuccin"]{--accent:#8839EF;--accent-hover:#6C2BD9;--accent-bg:rgba(136,57,239,0.08);--accent-bg-strong:rgba(136,57,239,0.15);--accent-text:#6C2BD9;}
+@media (prefers-color-scheme:dark){:root[data-skin="catppuccin"]{--accent:#CBA6F7;--accent-hover:#B4A0E5;--accent-bg:rgba(203,166,247,0.08);--accent-bg-strong:rgba(203,166,247,0.15);--accent-text:#CBA6F7;}}
+:root[data-skin="nous"]{--accent:#4682B4;--accent-hover:#35648C;--accent-bg:rgba(70,130,180,0.08);--accent-bg-strong:rgba(70,130,180,0.15);--accent-text:#35648C;}
+@media (prefers-color-scheme:dark){:root[data-skin="nous"]{--accent:#7FB3D5;--accent-hover:#5F93B5;--accent-bg:rgba(127,179,213,0.08);--accent-bg-strong:rgba(127,179,213,0.15);--accent-text:#7FB3D5;}}
+:root[data-skin="geist"]{--accent:#111111;--accent-hover:#000000;--accent-bg:rgba(0,0,0,0.05);--accent-bg-strong:rgba(0,0,0,0.1);--accent-text:#111111;}
+@media (prefers-color-scheme:dark){:root[data-skin="geist"]{--accent:#FFF175;--accent-hover:#E5D867;--accent-bg:rgba(255,241,117,0.08);--accent-bg-strong:rgba(255,241,117,0.15);--accent-text:#FFF175;}}
+@media (prefers-color-scheme:dark){:root[data-skin="zeus"]{--accent:#FFFFFF;--accent-hover:#CCCCCC;--accent-bg:rgba(255,255,255,0.06);--accent-bg-strong:rgba(255,255,255,0.12);--accent-text:#FFFFFF;--bg:#000000;--bg-deep:#000000;--layer:#0a0a0a;--layer-2:#141414;--border:#222222;--border-strong:#333333;}}
+:root[data-skin="zeus"]{--accent:#111111;--accent-hover:#000000;--accent-bg:rgba(0,0,0,0.05);--accent-bg-strong:rgba(0,0,0,0.1);--accent-text:#111111;}
+/* font-size axis */
+html[data-font="small"] body{font-size:12px}html[data-font="small"] .msg{font-size:13px}
+html[data-font="large"] body{font-size:14px}html[data-font="large"] .msg{font-size:15.5px}
 .sess.active{background:var(--accent-bg,var(--layer-2));border-color:var(--accent-text,var(--border-strong));}
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -78,6 +91,44 @@ body{font-family:var(--sans);font-size:13px;line-height:1.5;margin:0;background:
 .msg th,.msg td{border-bottom:1px solid var(--border);padding:8px 12px;text-align:left;vertical-align:top}
 .msg th{font-weight:500}
 .msg hr{border:none;border-top:1px solid var(--border);margin:20px 0}
+/* Hermes Calm Console: prose-first transcript — assistant serif, user stays sans */
+.msg.assistant .mbody{font-family:Georgia,"Times New Roman",serif;font-size:14.5px;line-height:1.65}
+.msg.user{font-family:var(--sans)}
+/* context ring states (ambient budget awareness) */
+#ctxFill.warn{background:var(--think)}
+#ctxFill.crit{background:var(--error)}
+#ctxRow.ring{position:relative}
+/* demand-driven inspector: closed by default on desktop */
+body[data-insp="closed"] aside[data-slot="inspector"]{display:none}
+/* Control Center modal */
+#ccModal{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+#ccModal.open{display:flex}
+#ccBox{background:var(--layer);border:1px solid var(--border-strong);border-radius:12px;width:min(480px,92vw);max-height:84vh;overflow:auto;animation:pop-in .12s ease-out}
+#ccTabs{display:flex;gap:4px;padding:10px 12px 0}
+#ccTabs button{flex:1;font-size:12px;padding:6px}
+#ccTabs button.on{border-color:var(--accent-text);color:var(--accent-text)}
+#ccBody{padding:12px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+#ccBody .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#ccBody label{color:var(--muted);font-size:12px}
+#ccBody select{font-size:12px;padding:4px;flex:1;min-width:140px}
+/* titlebar tighten: model filter smaller, session context only */
+#modelFilter{width:170px}
+#wsPick{font-size:12px;max-width:150px}
+#wsAdd{font-size:12px;padding:8px 10px}
+/* mobile drawer (<640px): sidebar overlay, inspector slide-over */
+#menuBtn{display:none}
+@media (max-width:640px){
+ #menuBtn{display:inline-block}
+ aside[data-slot="sessions-sidebar"]{position:fixed;left:0;top:0;bottom:0;z-index:60;width:250px;transform:translateX(-105%);transition:transform .18s ease;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+ body[data-side="open"] aside[data-slot="sessions-sidebar"]{transform:none}
+ body[data-insp="open"] aside[data-slot="inspector"]{display:flex;position:fixed;right:0;top:0;bottom:0;z-index:60;max-width:92vw;background:var(--bg);box-shadow:0 8px 24px rgba(0,0,0,.35)}
+ #modelNow{display:none}
+ #modelFilter{width:120px}
+ .msg{max-width:96%}
+}
+/* empty-state starter chips */
+.exchip{border:1px solid var(--border-strong);border-radius:999px;padding:4px 12px;font-size:12px;color:var(--muted)}
+.exchip:hover{color:var(--text);background:var(--hover)}
 .seclabel{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 /* Titlebar (desktop shell pattern) */
 header[data-slot="titlebar"]{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--layer);border-bottom:1px solid var(--border);flex:0 0 auto;flex-wrap:wrap}
@@ -293,7 +344,9 @@ button:active{transform:scale(.96)}
 </style></head>
 <body>
 <header data-slot="titlebar">
+<button id="menuBtn" title="Sessions">☰</button>
 <b>formyproject agent</b>
+<select id="wsPick" title="Active project (workspace)"></select><button id="wsAdd" title="Add a project folder">+</button>
 <div id="modelWrap" data-component="model-selector">
 <input id="modelFilter" placeholder="filter models..." autocomplete="off" role="combobox" aria-expanded="false">
 <div id="modelList" data-slot="model-selector-list"></div>
@@ -307,10 +360,17 @@ button:active{transform:scale(.96)}
 <option value="poseidon">skin: poseidon</option>
 <option value="sisyphus">skin: sisyphus</option>
 <option value="charizard">skin: charizard</option>
+<option value="sienna">skin: sienna</option>
+<option value="catppuccin">skin: catppuccin</option>
+<option value="nous">skin: nous</option>
+<option value="geist">skin: geist</option>
+<option value="zeus">skin: zeus</option>
 </select>
  <span id="status" style="font-size:12px;color:var(--muted)"></span>
  <button id="livePill" title="What the model is thinking now — click to jump to it">● LIVE</button>
 <span style="flex:1"></span>
+<button id="inspBtn" title="Toggle workspace panel">🗂</button>
+<button id="ccBtn" title="Control Center — session, prefs, system">⚙</button>
 <button id="toolsBtn" title="Collapse/expand all tool cards">⧉</button>
 <button id="newBtn" title="New session">+ New</button>
 </header>
@@ -321,6 +381,7 @@ button:active{transform:scale(.96)}
 <div id="sessTools"><button id="importBtn" title="Import session from JSON">Import</button><button id="archBtn" title="Show/hide archived">Archived</button></div>
 <input type="file" id="importFile" accept=".json,application/json" style="display:none">
 <div id="sessList"></div>
+<button id="ccSideBtn" title="Control Center" style="font-size:12px;color:var(--muted)">⚙ Control Center</button>
 </aside>
 <main data-slot="session-chat-panel">
 <div id="msgs" data-slot="timeline"></div>
@@ -335,7 +396,8 @@ button:active{transform:scale(.96)}
   <button onclick="respondApproval('deny')">Deny</button>
  </div>
 </div>
-<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="micBtn" title="Voice input">🎤</button><button id="sendBtn" onclick="send()">Send</button></div>
+<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands…" title="Slash: /help /clear /compact /model /new /usage /theme · paste workspace://path to open a file"></textarea><button id="attachBtn" title="Attach a file (text is pasted in, other files are stored)">📎</button><button id="micBtn" title="Voice input">🎤</button><button id="sendBtn" onclick="send()">Send</button></div>
+<input type="file" id="attachFile" style="display:none">
 <div id="slashMenu"></div>
 <div id="ctxRow" title="Estimated context use for this session"><div id="ctxBar"><div id="ctxFill"></div></div><span id="ctxTxt">ctx —</span></div>
 </main>
@@ -346,7 +408,7 @@ button:active{transform:scale(.96)}
 <h4>System prompt (your own)</h4>
 <textarea id="sys"></textarea><br><br>
 <button onclick="saveSys()">Save system prompt</button>
-<div id="prefsRow"><label>Send <select id="sendKeyPick"><option value="enter">Enter</option><option value="mod">⌘/Ctrl+Enter</option></select></label><label>Theme <select id="themePick"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label></div>
+<div id="prefsRow"><label>Send <select id="sendKeyPick"><option value="enter">Enter</option><option value="mod">⌘/Ctrl+Enter</option></select></label><label>Theme <select id="themePick"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Font <select id="fontPick"><option value="">Default</option><option value="small">Small</option><option value="large">Large</option></select></label></div>
 </div>
 <div id="tabTasks" style="display:none">
 <h4>Cron jobs</h4>
@@ -376,6 +438,15 @@ button:active{transform:scale(.96)}
 </div>
 </aside>
 </div>
+<div id="ccModal" role="dialog" aria-label="Control Center"><div id="ccBox">
+<div id="ccTabs"><button id="ccConvBtn" class="on">Conversation</button><button id="ccPrefBtn">Preferences</button><button id="ccSysBtn">System</button></div>
+<div id="ccBody">
+<div id="ccConv"><div class="row"><button id="ccExportMd">Export Markdown</button><button id="ccExportJson">Export JSON</button><button id="ccClear">Clear history</button></div></div>
+<div id="ccPref" style="display:none"><div class="row"><label>Skin</label><select id="ccSkin"><option value="">default</option><option value="ares">ares</option><option value="mono">mono</option><option value="slate">slate</option><option value="poseidon">poseidon</option><option value="sisyphus">sisyphus</option><option value="charizard">charizard</option><option value="sienna">sienna</option><option value="catppuccin">catppuccin</option><option value="nous">nous</option><option value="geist">geist</option><option value="zeus">zeus</option></select></div><div class="row"><label>Theme</label><select id="ccTheme"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></div><div class="row"><label>Send key</label><select id="ccSend"><option value="enter">Enter</option><option value="mod">⌘/Ctrl+Enter</option></select></div></div>
+<div id="ccSysPane" style="display:none"><div class="row"><span id="ccStatus" style="font-size:12px;color:var(--muted)"></span></div><div class="row"><span style="font-size:12px;color:var(--faint)">Shortcuts: / commands · Enter send · Esc stop · double-click renames a session</span></div></div>
+<div class="row"><span style="flex:1"></span><button id="ccClose">Close</button></div>
+</div>
+</div></div>
 <script>
 // ---------- skins (accent palettes ported from nesquena/hermes-webui, MIT) ----------
 function applySkin(name){
@@ -389,7 +460,7 @@ try{
  let cur='';
  try{cur=localStorage.getItem('formy.skin')||'';}catch(e){}
  let sp=document.getElementById('skinPick');
- if(sp){sp.value=cur;sp.addEventListener('change',e=>applySkin(e.target.value));}
+  if(sp){sp.value=cur;sp.addEventListener('change',e=>{applySkin(e.target.value);try{document.getElementById('ccSkin').value=e.target.value;}catch(_){}});}
 }catch(e){}
 // ---------- session store (desktop tabs pattern, localStorage) ----------
 const LS_SESS='formy.sessions.v1', LS_ACTIVE='formy.active.v1';
@@ -545,12 +616,17 @@ function rerenderMsgs(){
  let box=document.getElementById('msgs');box.innerHTML='';
  window._toolGroup=null;_pinned=true;syncJump();
  let h=cur().history||[];
- if(!h.length){
-  let e=document.createElement('div');e.className='empty-state';
-  e.innerHTML='<div class="et">Nothing here yet</div><div class="ed">Ask anything below to get started</div>';
-  let b=document.createElement('button');b.textContent='New session';b.onclick=newSession;
-  e.appendChild(b);box.appendChild(e);
- }
+  if(!h.length){
+   let e=document.createElement('div');e.className='empty-state';
+   e.innerHTML='<div class="et">What should we work on?</div><div class="ed">Chat with your agent — tools, files and terminal are one click away</div>';
+   let chips=document.createElement('div');chips.style.display='flex';chips.style.gap='6px';chips.style.flexWrap='wrap';chips.style.justifyContent='center';
+   ['Explain this repo','/help — list commands','Review open changes'].forEach(t=>{
+    let c=document.createElement('button');c.className='exchip';c.textContent=t;
+    c.onclick=()=>{document.getElementById('in').value=t;autogrow();document.getElementById('in').focus();};
+    chips.appendChild(c);
+   });
+   e.appendChild(chips);box.appendChild(e);
+  }
  h.forEach((m,i)=>addMsg(m.role==='user'?'user':'assistant',m.content,true,m.ts,i));
  let past=cur().tools||[];
  if(past.length){window._toolGroup=null;ensureToolGroup('Earlier activity');past.forEach(x=>{try{renderTool(x,true);}catch(e){}});closeToolGroup();}
@@ -695,9 +771,9 @@ function syncJump(newmsg){
 function ensureToolGroup(label){
  let box=msgsEl(),g=window._toolGroup;
  if(!g||!document.contains(g)||g.dataset.done){
-  g=document.createElement('div');g.className='tool-group';
-  let head=document.createElement('div');head.className='tool-group-head';
-  let caret=document.createElement('span');caret.className='caret';caret.textContent='▼';
+   g=document.createElement('div');g.className='tool-group collapsed';
+   let head=document.createElement('div');head.className='tool-group-head';
+   let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
   let lab=document.createElement('span');lab.className='glabel';lab.textContent=label||'Activity';
   let cnt=document.createElement('span');cnt.className='cnt';cnt.textContent='';
   head.appendChild(caret);head.appendChild(lab);head.appendChild(cnt);headAttrs(head);
@@ -711,7 +787,7 @@ function ensureToolGroup(label){
 function noteToolGrouped(){
  let g=window._toolGroup;if(!g||!document.contains(g))return;
  let n=g.querySelectorAll('.tool-group-body > .tool').length;
- let cnt=g.querySelector('.cnt');if(cnt)cnt.textContent=n?n+' tool'+(n>1?'s':'')+' — click to collapse':'';
+ let cnt=g.querySelector('.cnt');  if(cnt)cnt.textContent=n?('Activity: '+n+' tool'+(n>1?'s':'')) :'';
 }
 function closeToolGroup(){if(window._toolGroup)window._toolGroup.dataset.done='1';window._toolGroup=null;}
 (function(){
@@ -759,8 +835,9 @@ async function init(){
   document.getElementById('status').classList.toggle('live',!!m.has_key);
   let s=await (await fetch(apiUrl('/api/system'))).json();
   document.getElementById('sys').value=s.system||'';
-  renderSessions();rerenderMsgs();
- }catch(e){
+   renderSessions();rerenderMsgs();
+   try{await wsSpaces();}catch(e){}
+  }catch(e){
   document.getElementById('status').textContent='BACKEND UNREACHABLE';
   addMsg('assistant','ERROR: cannot reach server.py at '+location.origin+' — open http://localhost:8000 (not file://), and keep server.py running. '+e);
  }
@@ -959,7 +1036,7 @@ function updateCtx(){
   let fmt=n=>n>=1000?(n/1000).toFixed(1)+'k':String(n);
   let txt=document.getElementById('ctxTxt'),fill=document.getElementById('ctxFill');
   if(txt){txt.textContent=detail?('in ~'+fmt(inTok)+' · out ~'+fmt(outTok)+' · ~$'+cost.toFixed(3)):('~'+fmt(tok)+' tok · '+pct+'% · ~$'+cost.toFixed(3)+' (est)');txt.title='Window ~'+(win/1000)+'k ('+selectedModel+') · cost is a rough estimate · click for in/out detail';}
-  if(fill)fill.style.width=pct+'%';
+   if(fill){fill.style.width=pct+'%';fill.classList.toggle('warn',pct>=70&&pct<90);fill.classList.toggle('crit',pct>=90);}
  }catch(e){}
 }
 try{document.getElementById('ctxTxt').onclick=()=>{try{localStorage.setItem('formy.ctxDetail',localStorage.getItem('formy.ctxDetail')==='1'?'0':'1');}catch(e){}try{updateCtx();}catch(e){}};}catch(e){}
@@ -970,8 +1047,10 @@ const SLASH_BUILTINS=[
  {cmd:'/compact',desc:'Summarize history [focus] (/compress alias)'},
  {cmd:'/model',desc:'Switch model — /model <name>'},
  {cmd:'/new',desc:'New session'},
- {cmd:'/usage',desc:'Token/cost detail'},
- {cmd:'/theme',desc:'Set skin — /theme <name>'},
+  {cmd:'/usage',desc:'Token/cost detail'},
+  {cmd:'/theme',desc:'Set skin — /theme <name>'},
+  {cmd:'/skin',desc:'Set skin (alias of /theme)'},
+  {cmd:'/workspace',desc:'Switch project — /workspace [name]'},
 ];
 let slashSkills=[],slashLoaded=false,slashIdx=0,slashItems=[];
 function slashOpen(){try{return document.getElementById('slashMenu').style.display==='block';}catch(e){return false;}}
@@ -1017,7 +1096,7 @@ function pickSlash(i){
 async function runBuiltin(cmd,arg){
  cmd=String(cmd||'').toLowerCase();arg=String(arg||'').trim();
  let inp=document.getElementById('in');inp.value='';autogrow();hideSlash();
- if(cmd==='/help'){addMsg('assistant','**Slash commands**\n\n`/help` — this list\n`/clear` — clear this session\n`/compact [focus]` — summarize history (`/compress` works too)\n`/model <name>` — switch model\n`/new` — new session\n`/usage` — token/cost detail\n`/theme <skin>` — default, ares, mono, slate, poseidon, sisyphus, charizard\n\nAnything else starting with `/` (like a skill name) is sent to the agent.');return true;}
+ if(cmd==='/help'){addMsg('assistant','**Slash commands**\n\n`/help` — this list\n`/clear` — clear this session\n`/compact [focus]` — summarize history (`/compress` works too)\n`/model <name>` — switch model\n`/new` — new session\n`/usage` — token/cost detail\n`/theme <skin>` — default, ares, mono, slate, poseidon, sisyphus, charizard, sienna, catppuccin, nous, geist, zeus (`/skin` works too)\n`/workspace [name]` — list projects or switch\n\nAnything else starting with `/` (like a skill name) is sent to the agent.');return true;}
  if(cmd==='/clear'){cur().history=[];cur().updated=Date.now();saveStore();rerenderMsgs();return true;}
  if(cmd==='/new'){newSession();return true;}
  if(cmd==='/model'){
@@ -1027,15 +1106,26 @@ async function runBuiltin(cmd,arg){
   if(!m){addMsg('assistant','ERROR: no model matches "'+arg+'".');return true;}
   pickModel(m);addMsg('assistant','Model → '+m);return true;
  }
- if(cmd==='/theme'){
-  let skins=['','ares','mono','slate','poseidon','sisyphus','charizard'];
+  if(cmd==='/theme'||cmd==='/skin'){
+   let skins=['','ares','mono','slate','poseidon','sisyphus','charizard','sienna','catppuccin','nous','geist','zeus'];
   let q=arg.toLowerCase();
   if(!q){addMsg('assistant','Skins: '+skins.map(s=>s||'default').join(', '));return true;}
   let hit=skins.find(s=>(s||'default')===q||(s||'default').startsWith(q));
   if(hit===undefined){addMsg('assistant','ERROR: unknown skin "'+arg+'".');return true;}
   applySkin(hit);try{document.getElementById('skinPick').value=hit;}catch(e){}
-  addMsg('assistant','Skin → '+(hit||'default'));return true;
- }
+   addMsg('assistant','Skin → '+(hit||'default'));return true;
+  }
+  if(cmd==='/workspace'){
+   try{
+    let j=await (await fetch(apiUrl('/api/workspaces'))).json();
+    if(!j.ok)throw new Error('list failed');
+    if(!arg){addMsg('assistant','**Projects**\n\n'+(j.roots||[]).map(r=>(r===j.active?'● ':'○ ')+wsBase(r)+' — `'+r+'`').join('\n')+'\n\nSwitch: `/workspace <name>`.');return true;}
+    let q=arg.toLowerCase();
+    let hit=(j.roots||[]).find(r=>r.toLowerCase()===q)||(j.roots||[]).find(r=>wsBase(r).toLowerCase()===q)||(j.roots||[]).find(r=>wsBase(r).toLowerCase().startsWith(q))||(j.roots||[]).find(r=>r.toLowerCase().includes(q));
+    if(!hit){addMsg('assistant','ERROR: no project matches "'+arg+'".');return true;}
+    await wsSwitch(hit);addMsg('assistant','Workspace → '+wsBase(hit));return true;
+   }catch(e){addMsg('assistant','ERROR: workspace failed — '+(e.message||e));return true;}
+  }
  if(cmd==='/usage'){
   try{localStorage.setItem('formy.ctxDetail','1');}catch(e){}
   try{updateCtx();}catch(e){}
@@ -1235,7 +1325,7 @@ async function send(){
     // Two-phase (hermes pattern): POST /start returns fast (no idle-die on flaky
     // wifi), reply arrives via SSE result event, /api/chat/result poll backstops.
     // P0-1: run+item_id is the idempotency key — retry with same rid never forks a second loop.
-    let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
+    let payload={message:msg,history,model,system:(sys||'')+(window._wsActive?'\n\n[Active workspace: '+window._wsActive+' — treat this as the project root; pass workdir explicitly in bash calls.]':''),run:rid,item_id:rid,delivery:'steer',session:activeId};
     console.log('[send]',model,msg.slice(0,120));
     let resp=await fetch(apiUrl('/api/chat/start'),{method:'POST',headers:{'Content-Type':'application/json'},
      body:JSON.stringify(payload)});
@@ -1334,9 +1424,9 @@ document.getElementById('in').addEventListener('keydown',e=>{
  else if(e.key==='Escape'){if(isRunning&&currentRid)interrupt();else e.target.blur();}
 });
 function setRunning(running){
- document.getElementById('in').placeholder=running
-  ?'Add follow-up, / for commands, @ for context…'
-  :'Ask anything, / for commands, @ for context…';
+  document.getElementById('in').placeholder=running
+   ?'Add follow-up, / for commands…'
+   :'Ask anything, / for commands…';
  let pill=document.getElementById('livePill');
  if(pill){pill.style.display=running?'inline-block':'none';if(!running)pill.title='What the model is thinking now — click to jump to it';}
  // composer Stop: cancel the run without hunting for Esc (hermes-webui pattern)
@@ -1360,8 +1450,8 @@ function wsShow(tab){
   document.getElementById('tab'+cap).style.display=t===tab?'block':'none';
   document.getElementById('tab'+cap+'Btn').classList.toggle('on',t===tab);
  });
- wsTab=(tab==='files');
- if(tab==='files'&&!wsRoot&&!Object.keys(wsKids).length)wsNav('');
+  wsTab=(tab==='files');
+  if(tab==='files'){setInsp(true);if(!wsRoot&&!Object.keys(wsKids).length)wsNav('');}
  if(tab==='tasks')cronRefresh();
  if(tab==='skills')skillRefresh();
 }
@@ -1554,6 +1644,130 @@ document.getElementById('toolsBtn').onclick=()=>{
  let anyOpen=groups.some(g=>!g.classList.contains('collapsed'));
  groups.forEach(g=>{g.classList.toggle('collapsed',anyOpen);let c=g.querySelector('.tool-group-head .caret');if(c)c.textContent=anyOpen?'▶':'▼';});
 };
+// ---------- demand-driven inspector + mobile drawer + Control Center ----------
+function setInsp(open){
+ try{
+  document.body.dataset.insp=open?'open':'closed';
+  if(window.innerWidth<=640)document.body.dataset.side='closed';
+  if(!open)try{localStorage.setItem('formy.insp','closed');}catch(e){}
+  else try{localStorage.setItem('formy.insp','open');}catch(e){}
+ }catch(e){}
+}
+try{
+ let want='closed';
+ try{want=localStorage.getItem('formy.insp')||'closed';}catch(e){}
+ document.body.dataset.insp=(want==='open')?'open':'closed';
+ document.body.dataset.side='closed';
+}catch(e){}
+try{document.getElementById('inspBtn').onclick=()=>setInsp(document.body.dataset.insp!=='open');}catch(e){}
+try{document.getElementById('menuBtn').onclick=()=>{document.body.dataset.side=document.body.dataset.side==='open'?'closed':'open';};}catch(e){}
+// Control Center: one modal for Conversation / Preferences / System
+function ccShow(tab){
+ try{
+  document.getElementById('ccModal').classList.add('open');
+  ['Conv','Pref','Sys'].forEach(t=>{
+   document.getElementById('cc'+t+(t==='Sys'?'Pane':t==='Conv'?'':'')).style.display=(t.toLowerCase()===tab||(tab==='conv'&&t==='Conv')||(tab==='pref'&&t==='Pref')||(tab==='sys'&&t==='Sys'))?'block':'none';
+  });
+  document.getElementById('ccConvBtn').classList.toggle('on',tab==='conv');
+  document.getElementById('ccPrefBtn').classList.toggle('on',tab==='pref');
+  document.getElementById('ccSysBtn').classList.toggle('on',tab==='sys');
+  try{
+   document.getElementById('ccSkin').value=localStorage.getItem('formy.skin')||'';
+   document.getElementById('ccTheme').value=localStorage.getItem('formy.theme')||'system';
+   document.getElementById('ccSend').value=localStorage.getItem('formy.sendKey')||'enter';
+   document.getElementById('ccStatus').textContent=document.getElementById('status').textContent||'';
+  }catch(e){}
+ }catch(e){}
+}
+function ccHide(){try{document.getElementById('ccModal').classList.remove('open');}catch(e){}}
+try{
+ document.getElementById('ccBtn').onclick=()=>ccShow('conv');
+ document.getElementById('ccSideBtn').onclick=()=>ccShow('conv');
+ document.getElementById('ccClose').onclick=ccHide;
+ document.getElementById('ccModal').addEventListener('click',e=>{if(e.target.id==='ccModal')ccHide();});
+ document.getElementById('ccConvBtn').onclick=()=>ccShow('conv');
+ document.getElementById('ccPrefBtn').onclick=()=>ccShow('pref');
+ document.getElementById('ccSysBtn').onclick=()=>ccShow('sys');
+ document.getElementById('ccSkin').onchange=e=>{applySkin(e.target.value);try{document.getElementById('skinPick').value=e.target.value;}catch(_){}};
+ document.getElementById('ccTheme').onchange=e=>{applyTheme(e.target.value);try{document.getElementById('themePick').value=e.target.value;}catch(_){}};
+ document.getElementById('ccSend').onchange=e=>{try{localStorage.setItem('formy.sendKey',e.target.value);document.getElementById('sendKeyPick').value=e.target.value;}catch(_){}};
+ document.getElementById('ccExportMd').onclick=()=>exportSession(activeId);
+ document.getElementById('ccExportJson').onclick=()=>exportJSON(activeId);
+ document.getElementById('ccClear').onclick=()=>{cur().history=[];cur().updated=Date.now();saveStore();rerenderMsgs();ccHide();};
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('ccModal').classList.contains('open'))ccHide();});
+}catch(e){}
+// ---------- spaces-lite: topbar project switcher ----------
+window._wsActive='';
+function wsBase(p){try{let s=String(p||'').replace(/\/+$/,'');let i=s.lastIndexOf('/');return i>=0?s.slice(i+1):s;}catch(e){return String(p||'');}}
+async function wsSpaces(){
+ let sel=document.getElementById('wsPick');if(!sel)return;
+ try{
+  let j=await (await fetch(apiUrl('/api/workspaces'))).json();
+  if(!j.ok)throw new Error('list failed');
+  window._wsActive=j.active||'';
+  window._wsHome=j.home||'';
+  sel.innerHTML='';
+  (j.roots||[]).forEach(r=>{
+   let o=document.createElement('option');o.value=r;
+   o.textContent=wsBase(r)+(r===j.home?' ⌂':'');
+   o.title=r;sel.appendChild(o);
+  });
+  sel.value=j.active;
+  sel.title='Active project: '+(j.active||'');
+ }catch(e){sel.innerHTML='';let o=document.createElement('option');o.textContent='(workspace?)';sel.appendChild(o);}
+}
+async function wsSwitch(path){
+ try{
+  let r=await (await wsFetch('/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'use',path})})).json();
+  if(!r.ok)throw new Error(r.error||'switch failed');
+  window._wsActive=r.active;
+  wsKids={};wsRoot='';wsPreviewPath=null;wsDirty=false;
+  try{document.getElementById('wsPrev').innerHTML='';}catch(e){}
+  if(wsTab)renderWs();else wsGitRefresh();
+  try{if(document.getElementById('wsCp').style.display!=='none')wsCpRefresh();}catch(e){}
+  try{document.getElementById('wsPick').value=r.active;document.getElementById('wsPick').title='Active project: '+r.active;}catch(e){}
+ }catch(e){alert('Switch failed: '+e.message);wsSpaces();}
+}
+try{
+ document.getElementById('wsPick').onchange=e=>wsSwitch(e.target.value);
+ document.getElementById('wsAdd').onclick=async()=>{
+  let p=prompt('Add project folder (absolute path, e.g. /Users/you/jaikrajok)');
+  if(!p)return;
+  try{
+   let r=await (await wsFetch('/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add',path:p})})).json();
+   if(!r.ok)throw new Error(r.error||'add failed');
+   await wsSpaces();
+   if(confirm('Switch to "'+p+'"?'))wsSwitch(p);
+  }catch(e){alert('Add failed: '+e.message);}
+ };
+}catch(e){}
+// ---------- chat attachments (text inlined, rest vaulted per session) ----------
+function attachInsert(t){
+ let ta=document.getElementById('in');
+ ta.value=(ta.value?ta.value.replace(/\s+$/,'')+'\n\n':'')+t;
+ autogrow();ta.focus();
+}
+try{
+ document.getElementById('attachBtn').onclick=()=>document.getElementById('attachFile').click();
+ document.getElementById('attachFile').addEventListener('change',async e=>{
+  let f=e.target.files[0];e.target.value='';
+  if(!f)return;
+  if(f.size>5000000){alert('Attachment > 5MB.');return;}
+  let isText=/^text\//.test(f.type)||/\.(txt|md|markdown|json|js|jsx|ts|tsx|py|sh|bash|sql|csv|log|yaml|yml|html|css|xml)$/i.test(f.name);
+  try{
+   if(isText&&f.size<=100000){
+    let t=await f.text();
+    attachInsert('```'+f.name.split('.').pop()+'\n'+t.replace(/\n$/,'')+'\n```');
+   }else{
+    let dataUrl=await new Promise((res,rej)=>{let r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});
+    let b64=String(dataUrl).split(',')[1]||'';
+    let r=await (await fetch(apiUrl('/api/attach'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:activeId,name:f.name,data:b64})})).json();
+    if(!r.ok)throw new Error(r.error||'store failed');
+    attachInsert('[attached: '+f.name+' ('+f.size+' b) → .sessions/attachments/'+activeId+'/'+r.file+']');
+   }
+  }catch(err){alert('Attach failed: '+err.message);}
+ });
+}catch(e){}
 // ---------- prefs: send key + theme ----------
 function applyTheme(t){
  try{
@@ -1562,16 +1776,29 @@ function applyTheme(t){
   localStorage.setItem('formy.theme',t||'system');
  }catch(e){}
 }
+function applyFont(f){
+ try{
+  if(f)document.documentElement.dataset.font=f;
+  else delete document.documentElement.dataset.font;
+  localStorage.setItem('formy.font',f||'');
+ }catch(e){}
+}
 try{
  let sk=document.getElementById('sendKeyPick'),th=document.getElementById('themePick');
  try{sk.value=localStorage.getItem('formy.sendKey')||'enter';}catch(e){}
  try{th.value=localStorage.getItem('formy.theme')||'system';}catch(e){}
- sk.onchange=()=>{
-  try{localStorage.setItem('formy.sendKey',sk.value);}catch(e){}
-  document.getElementById('in').placeholder=sk.value==='mod'?'⌘/Ctrl+Enter to send, Enter for newline':'Ask anything, / for commands, @ for context…';
- };
- th.onchange=()=>applyTheme(th.value);
- if(sk.value==='mod')document.getElementById('in').placeholder='⌘/Ctrl+Enter to send, Enter for newline';
+  sk.onchange=()=>{
+   try{localStorage.setItem('formy.sendKey',sk.value);}catch(e){}
+   try{document.getElementById('ccSend').value=sk.value;}catch(_){}
+   document.getElementById('in').placeholder=sk.value==='mod'?'⌘/Ctrl+Enter to send, Enter for newline':'Ask anything, / for commands…';
+  };
+  th.onchange=()=>{applyTheme(th.value);try{document.getElementById('ccTheme').value=th.value;}catch(_){}};
+  try{
+   let fp=document.getElementById('fontPick');
+   try{fp.value=localStorage.getItem('formy.font')||'';}catch(e){}
+   fp.onchange=()=>applyFont(fp.value);
+  }catch(e){}
+  if(sk.value==='mod')document.getElementById('in').placeholder='⌘/Ctrl+Enter to send, Enter for newline';
 }catch(e){}
 // ---------- tasks: cron panel ----------
 async function cronRefresh(){
@@ -1591,7 +1818,13 @@ async function cronRefresh(){
    sub.textContent='['+(job.schedule||'?')+'] next '+nxt+' · last '+(job.last_status||'-');
    let pr=document.createElement('div');pr.className='csub';pr.textContent=String(job.prompt||'').slice(0,140);
    let btns=document.createElement('div');btns.className='cbtns';
-   [['Run',()=>cronAct('run',job.id)],[(job.paused?'Resume':'Pause'),()=>cronAct(job.paused?'resume':'pause',job.id)],['Delete',()=>{if(confirm('Delete job '+job.id+'?'))cronAct('remove',job.id);}]].forEach(([label,fn])=>{
+       [['Edit',()=>{
+     let ns=prompt('Schedule (every <N>s|m|h, daily@HH:MM)',job.schedule||'');
+     if(ns==null)return;
+     let np=prompt('Prompt',job.prompt||'');
+     if(np==null)return;
+     cronAct('update',job.id,{schedule:ns,prompt:np});
+    }],['Run',()=>cronAct('run',job.id)],[(job.paused?'Resume':'Pause'),()=>cronAct(job.paused?'resume':'pause',job.id)],['Delete',()=>{if(confirm('Delete job '+job.id+'?'))cronAct('remove',job.id);}]].forEach(([label,fn])=>{
     let b=document.createElement('button');b.textContent=label;b.onclick=fn;btns.appendChild(b);
    });
    d.appendChild(id);d.appendChild(sub);d.appendChild(pr);d.appendChild(btns);box.appendChild(d);
@@ -1603,15 +1836,30 @@ async function cronRefresh(){
    d.textContent=new Date(r.ts*1000).toLocaleString()+' · '+r.file;
    d.title='Open transcript';
    d.onclick=()=>{wsShow('files');wsPreview('.cron/runs/'+r.file);};
-   runs.appendChild(d);
-  });
- }catch(e){box.textContent='ERROR: '+e.message;}
+    runs.appendChild(d);
+   });
+   cronToast(j.runs||[]);
+  }catch(e){box.textContent='ERROR: '+e.message;}
 }
-async function cronAct(action,id){
+async function cronAct(action,id,extra){
  try{
-  await wsFetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,job_id:id})});
+  await wsFetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({action,job_id:id},extra||{}))});
  }catch(e){alert(action+' failed: '+e.message);}
  cronRefresh();
+}
+function cronToast(runs){
+ try{
+  let n=(runs||[]).length, prev=parseInt(localStorage.getItem('formy.cronRuns')||'-1');
+  localStorage.setItem('formy.cronRuns',String(n));
+  if(prev<0||n<=prev||!n)return;
+  document.querySelectorAll('.tippill.cron').forEach(x=>x.remove());
+  let p=document.createElement('div');p.className='tippill cron';
+  let s=document.createElement('span');s.textContent='⏰ Cron finished: '+runs[0].file+' — click to view';
+  p.onclick=()=>{p.remove();wsShow('files');wsPreview('.cron/runs/'+runs[0].file);};
+  let x=document.createElement('button');x.textContent='×';x.title='Dismiss';x.onclick=e=>{e.stopPropagation();p.remove();};
+  p.appendChild(s);p.appendChild(x);document.body.appendChild(p);
+  setTimeout(()=>{try{p.remove();}catch(e){}},15000);
+ }catch(e){}
 }
 document.getElementById('cronAdd').onclick=async()=>{
  let sched=document.getElementById('cronSched').value.trim();

@@ -745,14 +745,57 @@ def _chat_admit(data):
                       "history": history, "user_msg": user_msg, "session_id": session_id})
 
 
+def _ws_state_file():
+    return SESSIONS_DIR / "workspaces.json"
+
+
+def _ws_state():
+    """Spaces-lite state: {active, roots}. Server home files stay at ROOT."""
+    st = {"active": str(ROOT), "roots": [str(ROOT)]}
+    try:
+        p = _ws_state_file()
+        if p.exists():
+            d = json.loads(p.read_text() or "{}")
+            if isinstance(d, dict):
+                if isinstance(d.get("roots"), list):
+                    st["roots"] = [str(x) for x in d["roots"] if x]
+                if d.get("active"):
+                    st["active"] = str(d["active"])
+    except Exception:
+        pass
+    if str(ROOT) not in st["roots"]:
+        st["roots"].insert(0, str(ROOT))
+    return st
+
+
+def _ws_save(st):
+    try:
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        _ws_state_file().write_text(json.dumps(st, indent=1))
+    except Exception:
+        pass
+
+
+def _ws_active():
+    """Active workspace root. Falls back to ROOT if missing. Never raises."""
+    try:
+        a = Path(_ws_state().get("active") or str(ROOT))
+        if a.is_dir():
+            return a
+    except Exception:
+        pass
+    return ROOT
+
+
 def _ws_git():
     """Branch + dirty count for the workspace header. Never raises."""
     try:
-        b = subprocess.run(["git", "-C", str(ROOT), "branch", "--show-current"],
+        wr = _ws_active()
+        b = subprocess.run(["git", "-C", str(wr), "branch", "--show-current"],
                            capture_output=True, text=True, timeout=5)
         if b.returncode != 0:
             return None
-        s = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain=v1"],
+        s = subprocess.run(["git", "-C", str(wr), "status", "--porcelain=v1"],
                            capture_output=True, text=True, timeout=5)
         dirty = len([l for l in s.stdout.splitlines() if l.strip()]) if s.returncode == 0 else 0
         return {"branch": b.stdout.strip() or "(detached)", "dirty": dirty}
@@ -761,13 +804,14 @@ def _ws_git():
 
 
 def _ws_path(rel):
-    """Resolve rel under ROOT. Returns (Path, error). Never raises."""
+    """Resolve rel under the active workspace. Returns (Path, error). Never raises."""
     try:
         rel = (rel or "").strip().lstrip("/")
         if rel in (".", "./"):
             rel = ""
-        p = (ROOT / rel).resolve()
-        root = ROOT.resolve()
+        wr = _ws_active()
+        p = (wr / rel).resolve()
+        root = wr.resolve()
         if p != root and root not in p.parents:
             return None, "outside workspace"
         return p, None
@@ -776,17 +820,17 @@ def _ws_path(rel):
 
 
 def _ws_rel(p):
-    """Path relative to ROOT as posix string. Never raises."""
+    """Path relative to the active workspace as posix string. Never raises."""
     try:
-        return p.resolve().relative_to(ROOT.resolve()).as_posix()
+        return p.resolve().relative_to(_ws_active().resolve()).as_posix()
     except Exception:
         return ""
 
 
 def _git(*args):
-    """Run git -C ROOT. Returns CompletedProcess or None. Never raises."""
+    """Run git -C <active workspace>. Returns CompletedProcess or None. Never raises."""
     try:
-        return subprocess.run(["git", "-C", str(ROOT), *args],
+        return subprocess.run(["git", "-C", str(_ws_active()), *args],
                               capture_output=True, text=True, timeout=15)
     except Exception:
         return None
@@ -885,7 +929,7 @@ def _term_reader(tid, fd):
 
 
 def _term_create(cols=100, rows=30):
-    """Fork a real shell on a pty, cwd=ROOT. Returns (tid, error)."""
+    """Fork a real shell on a pty, cwd=active workspace. Returns (tid, error)."""
     import pty as _pty
     import fcntl as _fcntl
     try:
@@ -898,7 +942,7 @@ def _term_create(cols=100, rows=30):
         pid, fd = _pty.fork()
         if pid == 0:
             try:
-                os.chdir(str(ROOT))
+                os.chdir(str(_ws_active()))
                 os.environ["TERM"] = "xterm-256color"
                 os.environ["PS1"] = "$ "
                 os.execvp("bash", ["bash", "--noprofile", "--norc", "-i"])
@@ -1268,7 +1312,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"ok": True, "skills": out})
         elif parsed.path == "/api/files":
-            # Workspace browser: list a directory under ROOT (containment-checked).
+            # Workspace browser: list a directory under the active workspace (containment-checked).
             q = urllib.parse.parse_qs(parsed.query or "")
             rel = (q.get("path") or [""])[0]
             p, err = _ws_path(rel)
@@ -1291,6 +1335,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             git = _ws_git() if not rel else None
             self.send_json({"ok": True, "path": _ws_rel(p), "entries": entries, "git": git})
+        elif parsed.path == "/api/workspaces":
+            # Spaces-lite: list known project roots + active one.
+            st = _ws_state()
+            self.send_json({"ok": True, "active": st["active"], "roots": st["roots"],
+                            "home": str(ROOT)})
         elif parsed.path == "/api/file":
             # Workspace browser: read one file (text preview or binary flag).
             q = urllib.parse.parse_qs(parsed.query or "")
@@ -1586,7 +1635,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         self.send_json({"ok": False, "error": "not found"}, 404)
                         return
-                    log(f"/api/delete {_ws_rel(p) if p != ROOT.resolve() else '.'}")
+                    log(f"/api/delete {_ws_rel(p) if p != _ws_active().resolve() else '.'}")
                     self.send_json({"ok": True})
                 except Exception as e:
                     self.send_json({"ok": False, "error": str(e)[:200]}, 500)
@@ -1609,6 +1658,55 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "path": _ws_rel(dst)})
                 except Exception as e:
                     self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+        elif parsed.path == "/api/workspaces":
+            # Spaces-lite: add|use|remove project roots. Server home stays at ROOT.
+            action = str(data.get("action") or "list").strip().lower()
+            st = _ws_state()
+            if action == "list":
+                self.send_json({"ok": True, "active": st["active"], "roots": st["roots"],
+                                "home": str(ROOT)})
+            elif action in ("add", "use"):
+                raw = str(data.get("path") or "").strip()
+                if not raw:
+                    self.send_json({"ok": False, "error": "need path"}, 400)
+                    return
+                try:
+                    cand = Path(raw).expanduser()
+                    if not cand.is_absolute():
+                        cand = (ROOT / cand)
+                    cand = cand.resolve()
+                except Exception as e:
+                    self.send_json({"ok": False, "error": str(e)[:100]}, 400)
+                    return
+                if not cand.is_dir():
+                    self.send_json({"ok": False, "error": "not a directory"}, 400)
+                    return
+                s = str(cand)
+                if s not in st["roots"]:
+                    st["roots"].append(s)
+                if action == "use":
+                    st["active"] = s
+                _ws_save(st)
+                log(f"/api/workspaces {action} {s}")
+                self.send_json({"ok": True, "active": st["active"], "roots": st["roots"],
+                                "home": str(ROOT)})
+            elif action in ("remove", "rm", "delete"):
+                raw = str(data.get("path") or "").strip()
+                try:
+                    s = str(Path(raw).expanduser().resolve())
+                except Exception:
+                    s = raw
+                if s == str(ROOT.resolve()) or s == str(ROOT):
+                    self.send_json({"ok": False, "error": "cannot remove server home"}, 400)
+                    return
+                st["roots"] = [r for r in st["roots"] if r != s]
+                if st["active"] == s:
+                    st["active"] = str(ROOT)
+                _ws_save(st)
+                self.send_json({"ok": True, "active": st["active"], "roots": st["roots"],
+                                "home": str(ROOT)})
+            else:
+                self.send_json({"ok": False, "error": "use list|add|use|remove"}, 400)
         elif parsed.path == "/api/cron":
             # Tasks panel: list|add|remove|pause|resume|run cron jobs.
             try:
@@ -1630,6 +1728,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "message": _cron.pause_job(str(data.get("job_id") or data.get("id") or ""))})
             elif action in ("resume", "unpause"):
                 self.send_json({"ok": True, "message": _cron.resume_job(str(data.get("job_id") or data.get("id") or ""))})
+            elif action in ("update", "edit", "set"):
+                msg = _cron.update_job(str(data.get("job_id") or data.get("id") or ""),
+                                       str(data.get("schedule") or ""),
+                                       str(data.get("prompt") or ""),
+                                       str(data.get("model") or ""))
+                self.send_json({"ok": not msg.startswith("cron error") and not msg.startswith("cron: no job"), "message": msg},
+                               200 if not msg.startswith("cron error") else 400)
             elif action == "run":
                 job = _cron.get_job(str(data.get("job_id") or data.get("id") or ""))
                 if not job:
@@ -1642,6 +1747,31 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "job_id": job.get("id"), "started": True}, 202)
             else:
                 self.send_json({"ok": False, "error": "use list|add|remove|pause|resume|run"}, 400)
+        elif parsed.path == "/api/attach":
+            # Chat attachments: vault under server home (NOT the workspace),
+            # per session. Text is inlined client-side; this keeps the bytes.
+            try:
+                import base64 as _b64
+                name = str(data.get("name") or "file").replace("/", "_").replace("\\", "_")[:120] or "file"
+                b64 = str(data.get("data") or "")
+                sid = "".join(c for c in str(data.get("session") or "misc") if c.isalnum() or c in "-_")[:40] or "misc"
+                raw = _b64.b64decode(b64, validate=True) if b64 else b""
+            except Exception as e:
+                self.send_json({"ok": False, "error": f"bad base64: {e}"[:200]}, 400)
+                return
+            if len(raw) > 5_000_000:
+                self.send_json({"ok": False, "error": "attachment > 5MB"}, 400)
+                return
+            att = SESSIONS_DIR / "attachments" / sid
+            try:
+                att.mkdir(parents=True, exist_ok=True)
+                fn = f"{int(time.time())}-{name}"
+                (att / fn).write_bytes(raw)
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+                return
+            log(f"/api/attach {sid}/{fn} {len(raw)} bytes")
+            self.send_json({"ok": True, "file": fn, "size": len(raw)})
         elif parsed.path == "/api/upload":
             # Workspace browser: upload a file (base64 JSON, no multipart parsing).
             # Same containment + sensitive-path rules as /api/file.
@@ -1685,7 +1815,10 @@ class Handler(BaseHTTPRequestHandler):
             # restore = `git checkout <sha> -- .` (tracked files; untracked stay).
             action = str(data.get("action") or "list").strip().lower()
             if action == "list":
-                self.send_json({"ok": True, "checkpoints": list(reversed(_cp_load()))})
+                want = str(_ws_active().resolve())
+                mine = [e for e in _cp_load()
+                        if (e.get("root") or str(ROOT.resolve())) == want]
+                self.send_json({"ok": True, "checkpoints": list(reversed(mine))})
                 return
             if action == "create":
                 msg = str(data.get("message") or "").strip()[:200] or "manual snapshot"
@@ -1709,7 +1842,8 @@ class Handler(BaseHTTPRequestHandler):
                 entries = _cp_load()
                 cid = f"cp-{int(time.time())}"
                 entries.append({"id": cid, "sha": sha, "message": msg,
-                                "committed": dirty, "ts": time.time()})
+                                "committed": dirty, "ts": time.time(),
+                                "root": str(_ws_active().resolve())})
                 _cp_save(entries)
                 log(f"/api/checkpoint create {cid} {sha[:8]} committed={dirty}")
                 self.send_json({"ok": True, "id": cid, "sha": sha, "committed": dirty})
@@ -1718,6 +1852,9 @@ class Handler(BaseHTTPRequestHandler):
                 entry = next((e for e in _cp_load() if e.get("id") == cid), None)
                 if not entry:
                     self.send_json({"ok": False, "error": "no such checkpoint"}, 404)
+                    return
+                if (entry.get("root") or str(ROOT.resolve())) != str(_ws_active().resolve()):
+                    self.send_json({"ok": False, "error": "checkpoint belongs to another workspace"}, 400)
                     return
                 d = _git("diff", entry["sha"], "--stat")
                 out = (d.stdout if d and d.returncode == 0 else "")[:4000]
@@ -1730,6 +1867,9 @@ class Handler(BaseHTTPRequestHandler):
                 entry = next((e for e in _cp_load() if e.get("id") == cid), None)
                 if not entry:
                     self.send_json({"ok": False, "error": "no such checkpoint"}, 404)
+                    return
+                if (entry.get("root") or str(ROOT.resolve())) != str(_ws_active().resolve()):
+                    self.send_json({"ok": False, "error": "checkpoint belongs to another workspace"}, 400)
                     return
                 r = _git("checkout", entry["sha"], "--", ".")
                 if not r or r.returncode != 0:

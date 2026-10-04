@@ -33,7 +33,9 @@ no bundler, no framework, just `server.py` + `index.html`.
 | Cron while offline | No | Yes | Yes | Yes (server-up only) |
 | Self-saving skills | No | Yes | Yes | Writable (`skills/`) |
 | Provider-agnostic | Yes | Yes | Yes | MaxPlus only |
-| Voice / workspaces / profiles | — | — | Yes | No (out of scope) |
+| Voice input | — | — | Yes | Yes (Web Speech mic) |
+| Multi-project workspaces | — | — | Yes (Spaces) | Yes (Spaces-lite switcher) |
+| Profiles | — | — | Yes | No (out of scope) |
 
 ## Quick start
 
@@ -67,13 +69,30 @@ hard-refresh (`Cmd+Shift+R`, Safari: `Option+Cmd+R`).
 - Approval gate for dangerous shell commands (deny on web, prompt on CLI TTY)
 - Markdown rendering with syntax-highlighted code blocks + copy button
 - Pinned scroll-follow: reading history mid-run never yanks you; a `↓` pill jumps back
+- Per-message timestamps, user Edit + assistant ↻ Retry, per-block copy buttons
+- `workspace://` links open files in the preview pane; ```mermaid fences render inline
+- Composer: `/` slash commands (`/help /clear /compact /model /new /usage /theme /skin /workspace`), voice mic, 📎 file attach, context footer (tokens · % · ~$)
+- Subagent turns get their own distinct card
 
 ### Sessions
 
-- Create, rename (double-click), delete, search by title
-- Grouped by Today / Yesterday / Older in the sidebar
+- Create, rename (double-click or ⋯ menu), duplicate, delete, search by title, #tag, and message content
+- Pin ★ to top, archive with toggle, collapsible Today / Yesterday / Older groups, #tag chips + click-filter, tab title follows session
 - Persist across reloads (browser) and restarts (SQLite runs + transcripts)
-- Export as Markdown (chat + tool logs included)
+- Export Markdown (chat + tool logs) or full JSON, import JSON back
+
+### Workspace and projects
+
+- Spaces-lite switcher in the titlebar: add project folders, one-click switch (`+` button or `/workspace`)
+- File browser: lazy tree, breadcrumbs, md/code/image preview, edit + upload, rename/delete
+- Git branch + dirty badge; rollback checkpoints (snapshot/diff/restore, tracked files only)
+- Real pty terminal tab (typed commands need no approval); file ops follow the active project
+- Server home (sessions, skills, memory, keys) always stays put; checkpoints are scoped per project
+
+### Cron, skills, memory
+
+- Cron jobs via Tasks tab, chat tool, or CLI (`list|add|remove|pause|resume|update`), transcripts in `.cron/runs/`, ⏰ toast when a run finishes
+- Skills are agent-writable (`skill_manage`) with a Skills tab; memory inline (`MEMORY.md`, `USER.md`); `session_search` over past work
 
 ### Authentication and security
 
@@ -84,18 +103,23 @@ hard-refresh (`Cmd+Shift+R`, Safari: `Option+Cmd+R`).
 
 ### Themes
 
-- 7 skins (default + ares/mono/slate/poseidon/sisyphus/charizard, ported from hermes-webui)
-- Follows system dark/light; skin picker in the titlebar, persisted across reloads
+- 12 skins (default + ares/mono/slate/poseidon/sisyphus/charizard/sienna/catppuccin/nous/geist/zeus, ported from hermes-webui)
+- Follows system dark/light; Small/Default/Large font size; pickers in titlebar + Control Center, persisted across reloads
+
+### UI shell
+
+- ⚙ Control Center modal: Conversation (export/clear), Preferences (skin/theme/send-key), System (status/shortcuts)
+- Inspector tabs: System | Files | Tasks | Term | Skills, drag-resize, demand-driven (closed until needed)
 
 ### Settings and configuration
 
 - System prompt editor (right panel) — rebuilds live every turn, saved to `system_prompt.md`
-- Cron jobs via tool or CLI (`list|add|remove`), transcripts in `.cron/runs/`
+- Cron jobs via tool or CLI (`list|add|remove|pause|resume|update`), transcripts in `.cron/runs/`
 - Skills are agent-writable (`skill_manage`), memory inline (`MEMORY.md`, `USER.md`)
 
 ### Mobile responsive
 
-- Basic responsive layout (narrower sidebar, inspector hidden under 900px, touch copy buttons)
+- Slide-in sessions sidebar + slide-over inspector under 640px, narrower sidebar under 900px, touch-visible copy buttons
 - Full three-panel desktop layout unchanged
 
 ## Configuration
@@ -168,7 +192,6 @@ or anything under `.sessions/`, `.jobs/`, `.cron/` (all git-ignored).
 ## Roadmap
 
 - Background review (post-turn learning into memory/skills)
-- `cron` pause/resume verbs
-- `/skin` + `/theme` slash commands
-- Approval allow-once/session/always on web
-- Context usage ring in the composer
+- Turn journal (#6, optional audit trail)
+- Circular context ring (bar with warn states exists)
+- Session share links (localhost — likely stays export-only)

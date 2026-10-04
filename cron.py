@@ -154,6 +154,32 @@ def resume_job(jid: str) -> str:
     return f"cron: no job {jid}"
 
 
+def update_job(jid: str, schedule: str = "", prompt: str = "", model: str = "") -> str:
+    """Edit schedule and/or prompt of a job. Empty args keep current values."""
+    jobs = _load()
+    for j in jobs:
+        if j.get("id") == (jid or "").strip():
+            if schedule:
+                nxt, err = parse_schedule(schedule)
+                if err:
+                    return f"cron error: {err}"
+                j["schedule"] = schedule.strip().lower()
+                j["next_run"] = nxt
+            if prompt:
+                if len(prompt) > PROMPT_CAP:
+                    return f"cron error: prompt {len(prompt)} chars > cap {PROMPT_CAP}"
+                j["prompt"] = prompt.strip()
+            if model is not None and str(model).strip():
+                j["model"] = str(model).strip()
+            try:
+                _save(jobs)
+            except Exception as e:
+                return f"cron save error: {e}"
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(j["next_run"])) if j.get("next_run") else "?"
+            return f"cron job {jid} updated (next {when})"
+    return f"cron: no job {jid}"
+
+
 def get_job(jid: str):
     for j in _load():
         if j.get("id") == (jid or "").strip():
@@ -197,7 +223,7 @@ def mark_ran(jid: str, status: str) -> None:
 
 def cron_tool(action: str = "list", schedule: str = "", prompt: str = "",
                model: str = "", job_id: str = "") -> str:
-    """Agent-facing cron. action=list|add|remove|pause|resume. Read-only list is free."""
+    """Agent-facing cron. action=list|add|remove|pause|resume|update. Read-only list is free."""
     a = (action or "list").strip().lower()
     if a == "list":
         return list_jobs()
@@ -209,7 +235,9 @@ def cron_tool(action: str = "list", schedule: str = "", prompt: str = "",
         return pause_job(job_id or schedule)
     if a in ("resume", "unpause"):
         return resume_job(job_id or schedule)
-    return f"cron: unknown action {action} (use list|add|remove|pause|resume)"
+    if a in ("update", "edit", "set"):
+        return update_job(job_id, schedule, prompt, model)
+    return f"cron: unknown action {action} (use list|add|remove|pause|resume|update)"
 
 
 if __name__ == "__main__":
@@ -225,5 +253,12 @@ if __name__ == "__main__":
         print(pause_job(sys.argv[2]))
     elif cmd in ("resume", "unpause") and len(sys.argv) >= 3:
         print(resume_job(sys.argv[2]))
+    elif cmd in ("update", "edit") and len(sys.argv) >= 3:
+        # update <id> <schedule|-> <prompt...|->  ('-' keeps current value)
+        sched = sys.argv[3] if len(sys.argv) >= 4 else ""
+        pr = " ".join(sys.argv[4:]) if len(sys.argv) >= 5 else ""
+        print(update_job(sys.argv[2],
+                         "" if sched == "-" else sched,
+                         "" if pr == "-" else pr))
     else:
-        print("usage: cron.py list | add <schedule> <prompt...> | remove <id> | pause <id> | resume <id>")
+        print("usage: cron.py list | add <schedule> <prompt...> | remove <id> | pause <id> | resume <id> | update <id> <schedule|-> <prompt...|->")

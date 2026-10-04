@@ -91,6 +91,12 @@ aside[data-slot="sessions-sidebar"] h4{margin:4px 2px;color:var(--muted);font-si
 #sessMenu button:hover{background:var(--hover)}
 #sessMenu button.danger{color:var(--error)}
 #ctxTxt{cursor:pointer}
+/* slash commands dropdown */
+#slashMenu{position:fixed;z-index:60;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:8px;min-width:260px;max-width:90vw;max-height:300px;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,.35);display:none;animation:pop-in .12s ease-out}
+.slash-it{padding:8px 12px;font-size:13px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.slash-it.active{background:var(--hover)}
+.slash-it .cmd{font-family:var(--mono);font-weight:600;white-space:nowrap}
+.slash-it .desc{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* v2 empty state: centered, no art, title + desc + CTA */
 .empty-state{text-align:center;padding-top:52px;display:flex;flex-direction:column;gap:12px;align-items:center}
 .empty-state .et{font-size:13px;font-weight:500}
@@ -257,6 +263,7 @@ button:active{transform:scale(.96)}
  </div>
 </div>
 <div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="sendBtn" onclick="send()">Send</button></div>
+<div id="slashMenu"></div>
 <div id="ctxRow" title="Estimated context use for this session"><div id="ctxBar"><div id="ctxFill"></div></div><span id="ctxTxt">ctx —</span></div>
 </main>
 <aside data-slot="inspector">
@@ -851,6 +858,110 @@ function updateCtx(){
  }catch(e){}
 }
 try{document.getElementById('ctxTxt').onclick=()=>{try{localStorage.setItem('formy.ctxDetail',localStorage.getItem('formy.ctxDetail')==='1'?'0':'1');}catch(e){}try{updateCtx();}catch(e){}};}catch(e){}
+// ---------- slash commands (type / in composer; unknown passes to agent) ----------
+const SLASH_BUILTINS=[
+ {cmd:'/help',desc:'List commands'},
+ {cmd:'/clear',desc:"Clear this session's history"},
+ {cmd:'/compact',desc:'Summarize history [focus] (/compress alias)'},
+ {cmd:'/model',desc:'Switch model — /model <name>'},
+ {cmd:'/new',desc:'New session'},
+ {cmd:'/usage',desc:'Token/cost detail'},
+ {cmd:'/theme',desc:'Set skin — /theme <name>'},
+];
+let slashSkills=[],slashLoaded=false,slashIdx=0,slashItems=[];
+function slashOpen(){try{return document.getElementById('slashMenu').style.display==='block';}catch(e){return false;}}
+async function ensureSkills(){if(slashLoaded)return;slashLoaded=true;try{let r=await fetch(apiUrl('/api/skills'));let j=await r.json();if(j.ok)slashSkills=j.skills||[];}catch(e){}}
+async function renderSlash(){
+ let inp=document.getElementById('in'),menu=document.getElementById('slashMenu');
+ if(!inp||!menu)return;
+ let v=inp.value||'';
+ if(v[0]!=='/'){menu.style.display='none';return;}
+ let tok=v.slice(1).split(/\s/)[0].toLowerCase();
+ let bl=SLASH_BUILTINS.filter(b=>b.cmd.slice(1).startsWith(tok));
+ await ensureSkills();
+ let sk=slashSkills.filter(s=>(s.name+' '+(s.description||'')).toLowerCase().includes(tok)).slice(0,8);
+ slashItems=bl.concat(sk.map(s=>({cmd:'/'+s.name,desc:s.description||'skill',skill:true})));
+ if(!slashItems.length){menu.style.display='none';return;}
+ slashIdx=Math.max(0,Math.min(slashIdx,slashItems.length-1));
+ menu.innerHTML='';
+ slashItems.forEach((it,i)=>{
+  let d=document.createElement('div');d.className='slash-it'+(i===slashIdx?' active':'');
+  let c=document.createElement('span');c.className='cmd';c.textContent=it.cmd;
+  let ds=document.createElement('span');ds.className='desc';ds.textContent=it.desc;
+  d.appendChild(c);d.appendChild(ds);
+  d.onmousedown=e=>{e.preventDefault();pickSlash(i);};
+  menu.appendChild(d);
+ });
+ try{
+  let r=inp.getBoundingClientRect();
+  menu.style.left=Math.max(8,r.left)+'px';
+  menu.style.width=Math.max(260,Math.min(420,r.width))+'px';
+  menu.style.bottom=(window.innerHeight-r.top+6)+'px';
+ }catch(e){}
+ menu.style.display='block';
+}
+function hideSlash(){try{document.getElementById('slashMenu').style.display='none';}catch(e){}slashIdx=0;}
+function pickSlash(i){
+ let it=slashItems[i==null?slashIdx:i];if(!it)return;
+ let raw=document.getElementById('in').value||'';
+ let arg=raw.split(/\s+/).slice(1).join(' ').trim();
+ hideSlash();
+ if(it.skill){let inp=document.getElementById('in');inp.value=it.cmd+' ';autogrow();inp.focus();return;}
+ runBuiltin(it.cmd,arg);
+}
+async function runBuiltin(cmd,arg){
+ cmd=String(cmd||'').toLowerCase();arg=String(arg||'').trim();
+ let inp=document.getElementById('in');inp.value='';autogrow();hideSlash();
+ if(cmd==='/help'){addMsg('assistant','**Slash commands**\n\n`/help` — this list\n`/clear` — clear this session\n`/compact [focus]` — summarize history (`/compress` works too)\n`/model <name>` — switch model\n`/new` — new session\n`/usage` — token/cost detail\n`/theme <skin>` — default, ares, mono, slate, poseidon, sisyphus, charizard\n\nAnything else starting with `/` (like a skill name) is sent to the agent.');return true;}
+ if(cmd==='/clear'){cur().history=[];cur().updated=Date.now();saveStore();rerenderMsgs();return true;}
+ if(cmd==='/new'){newSession();return true;}
+ if(cmd==='/model'){
+  if(!arg){addMsg('assistant','Current model: '+selectedModel);return true;}
+  let q=arg.toLowerCase();
+  let m=allModels.find(x=>x.toLowerCase()===q)||allModels.find(x=>x.toLowerCase().startsWith(q))||allModels.find(x=>x.toLowerCase().includes(q));
+  if(!m){addMsg('assistant','ERROR: no model matches "'+arg+'".');return true;}
+  pickModel(m);addMsg('assistant','Model → '+m);return true;
+ }
+ if(cmd==='/theme'){
+  let skins=['','ares','mono','slate','poseidon','sisyphus','charizard'];
+  let q=arg.toLowerCase();
+  if(!q){addMsg('assistant','Skins: '+skins.map(s=>s||'default').join(', '));return true;}
+  let hit=skins.find(s=>(s||'default')===q||(s||'default').startsWith(q));
+  if(hit===undefined){addMsg('assistant','ERROR: unknown skin "'+arg+'".');return true;}
+  applySkin(hit);try{document.getElementById('skinPick').value=hit;}catch(e){}
+  addMsg('assistant','Skin → '+(hit||'default'));return true;
+ }
+ if(cmd==='/usage'){
+  try{localStorage.setItem('formy.ctxDetail','1');}catch(e){}
+  try{updateCtx();}catch(e){}
+  let ic=0,oc=0;(cur().history||[]).forEach(x=>{let c=String(x.content||'').length/4;if(x.role==='user')ic+=c;else oc+=c;});
+  let f=n=>n>=1000?(n/1000).toFixed(1)+'k':String(Math.round(n));
+  addMsg('assistant','**Usage (this session, est.)**\n\nin ~'+f(ic)+' tok · out ~'+f(oc)+' tok · ~$'+(ic/1e6*0.5+oc/1e6*2).toFixed(3)+'\n\nClick the ctx line for compact view.');return true;
+ }
+ if(cmd==='/compact'||cmd==='/compress'){
+  if(isRunning){addMsg('assistant','Wait for the run to finish, then /compact.');return true;}
+  let h=cur().history||[];
+  if(!h.length){addMsg('assistant','Nothing to compact.');return true;}
+  let wait=addMsg('assistant','... compacting '+h.length+' turns ...');
+  try{
+   let r=await (await fetch(apiUrl('/api/compact'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history:h.slice(-60),focus:arg,model:selectedModel})})).json();
+   if(!r.ok)throw new Error(r.error||'compact failed');
+   let now=Date.now();
+   cur().history=[{role:'user',content:'/compact'+(arg?' '+arg:''),ts:now},{role:'assistant',content:'[Summary of earlier conversation]\n\n'+r.summary,ts:now}];
+   cur().updated=now;saveStore();rerenderMsgs();
+  }catch(e){try{wait.remove();}catch(_){}addMsg('assistant','ERROR: compact failed — '+(e.message||e));}
+  return true;
+ }
+ return false;
+}
+function trySlash(msg){
+ if(!msg||msg[0]!=='/')return false;
+ let head=msg.slice(1).split(/\s+/)[0]||'';
+ let cmd='/'+head.toLowerCase();
+ let arg=msg.slice(head.length+2);
+ if(SLASH_BUILTINS.some(b=>b.cmd===cmd)||cmd==='/compress'){runBuiltin(cmd,arg);return true;}
+ return false;
+}
 function addMsg(role,text,silent,ts,hidx){
  let box=document.getElementById('msgs');
  box.querySelectorAll('.empty-state').forEach(x=>x.remove());
@@ -870,6 +981,7 @@ function addMsg(role,text,silent,ts,hidx){
 let currentRid=null, isRunning=false, steerBuffer=[];
 async function send(){
  let inp=document.getElementById('in');let msg=inp.value.trim();if(!msg)return;inp.value='';autogrow();
+ if(trySlash(msg))return;
  let filterVal=document.getElementById('modelFilter').value.trim();
  if(!allModels.includes(selectedModel)){
   if(allModels.includes(filterVal)){pickModel(filterVal);}
@@ -1094,7 +1206,21 @@ async function respondApproval(choice){
 }
 function autogrow(){let t=document.getElementById('in');t.style.height='auto';t.style.height=Math.min(120,t.scrollHeight)+'px';let b=document.getElementById('jumpBtn'),row=document.getElementById('row'),cr=document.getElementById('ctxRow');if(b&&row)b.style.bottom=(row.offsetHeight+(cr?cr.offsetHeight+6:0)+16)+'px';try{updateCtx();}catch(e){}}
 document.getElementById('in').addEventListener('input',autogrow);
+document.getElementById('in').addEventListener('input',()=>{try{renderSlash();}catch(e){}});
+document.addEventListener('click',e=>{
+ try{
+  let m=document.getElementById('slashMenu'),inp=document.getElementById('in');
+  if(m&&m.style.display==='block'&&!m.contains(e.target)&&e.target!==inp)hideSlash();
+ }catch(_){}
+});
 document.getElementById('in').addEventListener('keydown',e=>{
+ if(slashOpen()){
+  if(e.key==='ArrowDown'){e.preventDefault();slashIdx=Math.min(slashItems.length-1,slashIdx+1);renderSlash();}
+  else if(e.key==='ArrowUp'){e.preventDefault();slashIdx=Math.max(0,slashIdx-1);renderSlash();}
+  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();pickSlash(slashIdx);}
+  else if(e.key==='Escape'){e.preventDefault();hideSlash();}
+  return;
+ }
  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
  else if(e.key==='Escape'){if(isRunning&&currentRid)interrupt();else e.target.blur();}
 });

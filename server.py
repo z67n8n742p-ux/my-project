@@ -1057,6 +1057,33 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     p = None
                 self.send_json({"ok": True, "run": rid, "pending": p})
+        elif parsed.path == "/api/skills":
+            # Slash-command autocomplete: agent-written skills (skills/<name>/SKILL.md).
+            # Read-only, traversal-safe (iterate dirs only, no user input).
+            out = []
+            try:
+                sdir = ROOT / "skills"
+                if sdir.is_dir():
+                    for d in sorted(sdir.iterdir()):
+                        if not d.is_dir():
+                            continue
+                        f = d / "SKILL.md"
+                        if not f.exists():
+                            continue
+                        desc = ""
+                        try:
+                            for line in f.read_text().splitlines():
+                                line = line.strip().lstrip("# ").strip()
+                                if line:
+                                    desc = line[:120]
+                                    break
+                        except Exception:
+                            pass
+                        out.append({"name": d.name, "description": desc})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
+                return
+            self.send_json({"ok": True, "skills": out})
         elif parsed.path == "/api/session":
             q = urllib.parse.parse_qs(parsed.query or "")
             sid = _safe_sid((q.get("id") or [""])[0])
@@ -1189,6 +1216,41 @@ class Handler(BaseHTTPRequestHandler):
                 n = len(run["steer"])
             log(f"/api/steer run={rid} queued={n} msg_len={len(msg)}")
             self.send_json({"ok": True, "run": rid, "pending": n})
+        elif parsed.path == "/api/compact":
+            # /compact slash command: summarize this session's history into one
+            # assistant message so the chat can continue on a small budget.
+            if not API_KEY:
+                self.send_json({"ok": False, "error": "MAXPLUS_API_KEY not set"}, 400)
+                return
+            hist = data.get("history") or []
+            focus = str(data.get("focus") or "").strip()
+            model = data.get("model") or DEFAULT_MODEL
+            if model not in get_live_models():
+                model = DEFAULT_MODEL
+            lines = []
+            for h in hist[-60:]:
+                if h.get("role") in ("user", "assistant") and h.get("content"):
+                    lines.append(f"{h['role']}: {h['content']}"[:2000])
+            transcript = "\n".join(lines)[-30000:]
+            if not transcript.strip():
+                self.send_json({"ok": False, "error": "nothing to compact"}, 400)
+                return
+            prompt = "Summarize this conversation for continued work."
+            if focus:
+                prompt += f" Focus on: {focus[:500]}"
+            prompt += "\n\n" + transcript
+            try:
+                client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+                resp = _chat_create_with_retry(
+                    client, model,
+                    [{"role": "system", "content": SUMMARY_SYSTEM},
+                     {"role": "user", "content": prompt}])
+                summary = (resp.choices[0].message.content or "").strip()
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)[:300]}, 500)
+                return
+            log(f"/api/compact turns={len(lines)} summary_len={len(summary)}")
+            self.send_json({"ok": True, "summary": summary, "turns": len(lines)})
         else:
             self.send_response(404)
             self.end_headers()

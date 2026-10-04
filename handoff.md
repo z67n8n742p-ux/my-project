@@ -96,6 +96,11 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    #tag chips + click-filter, content search, JSON export/import, ctx click for
    in/out detail. Skipped: projects (tags cover it), share link (localhost),
    CLI bridge (agent.py doesn't log store.db).
+   Slash (2026-10-04): composer autocomplete (↑↓/Tab/Enter/Esc), built-ins
+   /help /clear /compact|/compress [focus] /model /new /usage /theme, skills
+   from GET /api/skills (substring match, built-ins win; unknown incl. skills
+   pass through to agent). POST /api/compact summarizes via SUMMARY_SYSTEM.
+   /workspace skipped (single repo root). Server restarted (new endpoints).
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

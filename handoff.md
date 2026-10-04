@@ -109,6 +109,12 @@ Local clone studied at `/tmp/.../hermes-webui` (master) — see bottom for borro
    preview md/code(img inline, binary→download), edit+save (dirty guard),
    +File/+Dir/rename/delete, ⎇ branch·dirty badge, `workspace://` chat links
    open in preview. Server restarted (files/file/raw/mkdir/delete/rename).
+   Power batch (2026-10-04): Tasks tab (cron list/add/run/pause/resume/delete
+   + run transcripts open in preview; cron.py pause|resume verbs + CLI),
+   workspace upload (base64 JSON ≤5MB), rollback checkpoints (snapshot/diff/
+   restore via git, store `.jobs/checkpoints.json`), send-key toggle
+   (Enter vs ⌘/Ctrl+Enter), explicit light/dark/system theme, ⧉ collapse-all
+   tools. Voice skipped (you said skip). Server restarted.
   XSS: `textContent` + escaped-first md.
 - `SOUL.md` / `AGENTS.md` — identity + conventions (were one `system_prompt.md`).
 - `system_prompt.md` — legacy layer, UI-editable, wrapped by builder.

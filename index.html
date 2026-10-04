@@ -2,7 +2,7 @@
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>formyproject agent</title>
-<script>try{var _sk=localStorage.getItem('formy.skin');if(_sk)document.documentElement.dataset.skin=_sk;}catch(e){}</script>
+<script>try{var _sk=localStorage.getItem('formy.skin');if(_sk)document.documentElement.dataset.skin=_sk;var _th=localStorage.getItem('formy.theme');if(_th&&_th!=='system')document.documentElement.dataset.theme=_th;}catch(e){}</script>
 <style>
 /* Theme tokens (v2-desktop inspired: flat CSS vars, dark default + light override) */
 :root{
@@ -26,6 +26,25 @@
    --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;--think:#8a6d1b;
   color-scheme:light;
  }
+}
+/* explicit theme override (System follows OS via media query above) */
+:root[data-theme="light"]{
+ --bg:#f4f5f7;--bg-deep:#e9ebef;--layer:#ffffff;--layer-2:#eef0f4;
+ --text:#1a1d23;--muted:#5b6472;--faint:#8a93a3;
+ --border:#dfe3ea;--border-strong:#c9d0dc;
+ --hover:#e3e8f0;--accent:#2b6cb0;--accent-text:#1c7a3d;
+ --error:#b3261e;--diff-add:#dff3e4;--diff-del:#fbe3e5;
+  --link:#2c47c8;--code-bg:rgba(20,20,20,.06);--kw:#7c3aed;--think:#8a6d1b;
+ color-scheme:light;
+}
+:root[data-theme="dark"]{
+ --bg:#0f1115;--bg-deep:#0b0d11;--layer:#171a21;--layer-2:#1e222c;
+ --text:#e6e6e6;--muted:#9aa0ae;--faint:#6b7280;
+ --border:#2a2e38;--border-strong:#333a48;
+ --hover:#2b3342;--accent:#2b6cb0;--accent-text:#7fd07f;
+ --error:#e06c75;--diff-add:#1d3a24;--diff-del:#3d2226;
+  --link:#9dbefe;--code-bg:rgba(230,230,230,.08);--kw:#c792ea;--think:#e3b341;
+ color-scheme:dark;
 }
 /* skins: accent palettes from nesquena/hermes-webui (MIT). data-skin on <html>, default = no attribute. */
 :root[data-skin="ares"]{--accent:#C0392B;--accent-hover:#A93226;--accent-bg:rgba(192,57,43,0.08);--accent-bg-strong:rgba(192,57,43,0.15);--accent-text:#922B21;}
@@ -243,6 +262,23 @@ button:active{transform:scale(.96)}
 #wsPrev textarea{width:100%;min-height:200px;font-family:var(--mono);font-size:12px}
 .wsmeta{font-size:11px;color:var(--muted);margin:4px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .wsmeta button{font-size:11px;padding:2px 8px}
+/* tasks tab + checkpoints */
+#prefsRow{display:flex;gap:8px;align-items:center;margin:8px 0;font-size:12px;flex-wrap:wrap;color:var(--muted)}
+#prefsRow select{font-size:12px;padding:4px}
+.cronjob{border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin:6px 0;font-size:12px}
+.cronjob .cid{font-family:var(--mono);font-weight:600}
+.cronjob .csub{color:var(--muted);margin:2px 0;word-break:break-word}
+.cronjob .cbtns{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap}
+.cronjob .cbtns button{font-size:11px;padding:2px 8px}
+.cronjob .paused{color:var(--think);font-weight:600}
+.cronrun{font-size:12px;padding:3px 6px;border-radius:6px;cursor:pointer;font-family:var(--mono)}
+.cronrun:hover{background:var(--hover)}
+#wsCp{margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+.cprow{border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin:6px 0;font-size:12px}
+.cprow .csub{color:var(--muted);margin:2px 0;word-break:break-word}
+.cprow .cbtns{display:flex;gap:4px;margin-top:4px}
+.cprow .cbtns button{font-size:11px;padding:2px 8px}
+.cprow pre{background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:6px;overflow:auto;max-height:200px;font-size:11px;white-space:pre-wrap}
 </style></head>
 <body>
 <header data-slot="titlebar">
@@ -264,6 +300,7 @@ button:active{transform:scale(.96)}
  <span id="status" style="font-size:12px;color:var(--muted)"></span>
  <button id="livePill" title="What the model is thinking now — click to jump to it">● LIVE</button>
 <span style="flex:1"></span>
+<button id="toolsBtn" title="Collapse/expand all tool cards">⧉</button>
 <button id="newBtn" title="New session">+ New</button>
 </header>
 <div id="layout">
@@ -293,14 +330,25 @@ button:active{transform:scale(.96)}
 </main>
 <aside data-slot="inspector" id="inspector">
 <div id="inspGrip" title="Drag to resize"></div>
-<div id="inspTabs"><button id="tabSysBtn" class="on">System</button><button id="tabFilesBtn">Files</button></div>
+<div id="inspTabs"><button id="tabSysBtn" class="on">System</button><button id="tabFilesBtn">Files</button><button id="tabTasksBtn">Tasks</button></div>
 <div id="tabSys">
 <h4>System prompt (your own)</h4>
 <textarea id="sys"></textarea><br><br>
 <button onclick="saveSys()">Save system prompt</button>
+<div id="prefsRow"><label>Send <select id="sendKeyPick"><option value="enter">Enter</option><option value="mod">⌘/Ctrl+Enter</option></select></label><label>Theme <select id="themePick"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label></div>
+</div>
+<div id="tabTasks" style="display:none">
+<h4>Cron jobs</h4>
+<div id="cronList"></div>
+<div style="display:flex;gap:6px;margin:6px 0"><input id="cronSched" placeholder="every 1h" style="width:110px" autocomplete="off"><button id="cronAdd" title="Add job">+ Add</button></div>
+<textarea id="cronPrompt" rows="2" placeholder="job prompt…" style="width:100%"></textarea>
+<h4>Runs</h4>
+<div id="cronRuns"></div>
 </div>
 <div id="tabFiles" style="display:none">
-<div id="wsHead"><span id="wsGit" title="git branch + dirty count"></span><span style="flex:1"></span><button id="wsNewFile" title="New file in this folder">+File</button><button id="wsNewDir" title="New folder">+Dir</button></div>
+<div id="wsHead"><span id="wsGit" title="git branch + dirty count"></span><span style="flex:1"></span><button id="wsNewFile" title="New file in this folder">+File</button><button id="wsNewDir" title="New folder">+Dir</button><button id="wsUpBtn" title="Upload files here">+Up</button><button id="wsCpBtn" title="Rollback checkpoints">⏪</button></div>
+<input type="file" id="wsUpFile" multiple style="display:none">
+<div id="wsCp" style="display:none"></div>
 <div id="wsCrumbs"></div>
 <div id="wsTree"></div>
 <div id="wsPrev"></div>
@@ -1257,7 +1305,11 @@ document.getElementById('in').addEventListener('keydown',e=>{
   else if(e.key==='Escape'){e.preventDefault();hideSlash();}
   return;
  }
- if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+ if(e.key==='Enter'&&!e.shiftKey){
+  let modOnly=false;try{modOnly=localStorage.getItem('formy.sendKey')==='mod';}catch(_){}
+  if(modOnly&&!e.metaKey&&!e.ctrlKey)return; // plain Enter = newline
+  e.preventDefault();send();
+ }
  else if(e.key==='Escape'){if(isRunning&&currentRid)interrupt();else e.target.blur();}
 });
 function setRunning(running){
@@ -1281,12 +1333,15 @@ function jumpLive(){
 // ---------- workspace browser (inspector Files tab) ----------
 let wsRoot='',wsKids={},wsPreviewPath=null,wsDirty=false,wsTab=false;
 function wsShow(tab){
+ document.getElementById('tabSys').style.display=tab==='sys'?'block':'none';
+ document.getElementById('tabFiles').style.display=tab==='files'?'block':'none';
+ document.getElementById('tabTasks').style.display=tab==='tasks'?'block':'none';
+ document.getElementById('tabSysBtn').classList.toggle('on',tab==='sys');
+ document.getElementById('tabFilesBtn').classList.toggle('on',tab==='files');
+ document.getElementById('tabTasksBtn').classList.toggle('on',tab==='tasks');
  wsTab=(tab==='files');
- document.getElementById('tabSys').style.display=wsTab?'none':'block';
- document.getElementById('tabFiles').style.display=wsTab?'block':'none';
- document.getElementById('tabSysBtn').classList.toggle('on',!wsTab);
- document.getElementById('tabFilesBtn').classList.toggle('on',wsTab);
- if(wsTab&&!wsRoot&&!Object.keys(wsKids).length)wsNav('');
+ if(tab==='files'&&!wsRoot&&!Object.keys(wsKids).length)wsNav('');
+ if(tab==='tasks')cronRefresh();
 }
 function wsGuard(){if(wsDirty&&!confirm('Discard unsaved edits?'))return false;wsDirty=false;return true;}
 async function wsFetch(url,opts){
@@ -1468,6 +1523,152 @@ function wsOpen(path){
 }
 document.getElementById('tabSysBtn').onclick=()=>wsShow('sys');
 document.getElementById('tabFilesBtn').onclick=()=>wsShow('files');
+document.getElementById('tabTasksBtn').onclick=()=>wsShow('tasks');
+document.getElementById('toolsBtn').onclick=()=>{
+ let groups=[...document.querySelectorAll('#msgs .tool-group')];
+ if(!groups.length)return;
+ let anyOpen=groups.some(g=>!g.classList.contains('collapsed'));
+ groups.forEach(g=>{g.classList.toggle('collapsed',anyOpen);let c=g.querySelector('.tool-group-head .caret');if(c)c.textContent=anyOpen?'▶':'▼';});
+};
+// ---------- prefs: send key + theme ----------
+function applyTheme(t){
+ try{
+  if(!t||t==='system')delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme=t;
+  localStorage.setItem('formy.theme',t||'system');
+ }catch(e){}
+}
+try{
+ let sk=document.getElementById('sendKeyPick'),th=document.getElementById('themePick');
+ try{sk.value=localStorage.getItem('formy.sendKey')||'enter';}catch(e){}
+ try{th.value=localStorage.getItem('formy.theme')||'system';}catch(e){}
+ sk.onchange=()=>{
+  try{localStorage.setItem('formy.sendKey',sk.value);}catch(e){}
+  document.getElementById('in').placeholder=sk.value==='mod'?'⌘/Ctrl+Enter to send, Enter for newline':'Ask anything, / for commands, @ for context…';
+ };
+ th.onchange=()=>applyTheme(th.value);
+ if(sk.value==='mod')document.getElementById('in').placeholder='⌘/Ctrl+Enter to send, Enter for newline';
+}catch(e){}
+// ---------- tasks: cron panel ----------
+async function cronRefresh(){
+ let box=document.getElementById('cronList');if(!box)return;
+ box.textContent='…';
+ try{
+  let j=await (await wsFetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list'})})).json();
+  if(!j.ok)throw new Error('list failed');
+  box.innerHTML='';
+  if(!(j.jobs||[]).length){let e=document.createElement('div');e.className='sess-empty';e.textContent='No jobs yet.';box.appendChild(e);}
+  (j.jobs||[]).forEach(job=>{
+   let d=document.createElement('div');d.className='cronjob';
+   let id=document.createElement('div');id.className='cid';id.textContent=job.id;
+   if(job.paused){let p=document.createElement('span');p.className='paused';p.textContent='PAUSED';id.appendChild(p);}
+   let sub=document.createElement('div');sub.className='csub';
+   let nxt=job.next_run?new Date(job.next_run*1000).toLocaleString():'?';
+   sub.textContent='['+(job.schedule||'?')+'] next '+nxt+' · last '+(job.last_status||'-');
+   let pr=document.createElement('div');pr.className='csub';pr.textContent=String(job.prompt||'').slice(0,140);
+   let btns=document.createElement('div');btns.className='cbtns';
+   [['Run',()=>cronAct('run',job.id)],[(job.paused?'Resume':'Pause'),()=>cronAct(job.paused?'resume':'pause',job.id)],['Delete',()=>{if(confirm('Delete job '+job.id+'?'))cronAct('remove',job.id);}]].forEach(([label,fn])=>{
+    let b=document.createElement('button');b.textContent=label;b.onclick=fn;btns.appendChild(b);
+   });
+   d.appendChild(id);d.appendChild(sub);d.appendChild(pr);d.appendChild(btns);box.appendChild(d);
+  });
+  let runs=document.getElementById('cronRuns');runs.innerHTML='';
+  if(!(j.runs||[]).length){let e=document.createElement('div');e.className='sess-empty';e.textContent='No runs yet.';runs.appendChild(e);}
+  (j.runs||[]).forEach(r=>{
+   let d=document.createElement('div');d.className='cronrun';
+   d.textContent=new Date(r.ts*1000).toLocaleString()+' · '+r.file;
+   d.title='Open transcript';
+   d.onclick=()=>{wsShow('files');wsPreview('.cron/runs/'+r.file);};
+   runs.appendChild(d);
+  });
+ }catch(e){box.textContent='ERROR: '+e.message;}
+}
+async function cronAct(action,id){
+ try{
+  await wsFetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,job_id:id})});
+ }catch(e){alert(action+' failed: '+e.message);}
+ cronRefresh();
+}
+document.getElementById('cronAdd').onclick=async()=>{
+ let sched=document.getElementById('cronSched').value.trim();
+ let prompt=document.getElementById('cronPrompt').value.trim();
+ if(!sched||!prompt){alert('Need schedule (e.g. every 1h) + prompt.');return;}
+ try{
+  let r=await (await wsFetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add',schedule:sched,prompt})})).json();
+  if(!r.ok)throw new Error(r.message||'add failed');
+  document.getElementById('cronSched').value='';document.getElementById('cronPrompt').value='';
+  cronRefresh();
+ }catch(e){alert('Add failed: '+e.message);}
+};
+// ---------- files: upload + checkpoints ----------
+document.getElementById('wsUpBtn').onclick=()=>document.getElementById('wsUpFile').click();
+document.getElementById('wsUpFile').addEventListener('change',async e=>{
+ let files=[...(e.target.files||[])];e.target.value='';
+ for(let f of files){
+  try{
+   let dataUrl=await new Promise((res,rej)=>{let r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});
+   let b64=String(dataUrl).split(',')[1]||'';
+   let rel=(wsRoot?wsRoot+'/':'')+f.name;
+   let r=await (await wsFetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:rel,data:b64})})).json();
+   if(!r.ok)throw new Error(r.error||'upload failed');
+  }catch(err){alert('Upload '+f.name+' failed: '+err.message);break;}
+ }
+ delete wsKids[wsRoot];wsGitRefresh();renderWs();
+});
+document.getElementById('wsCpBtn').onclick=()=>{
+ let d=document.getElementById('wsCp');
+ let show=d.style.display==='none';
+ d.style.display=show?'block':'none';
+ if(show)wsCpRefresh();
+};
+async function wsCpRefresh(){
+ let d=document.getElementById('wsCp');d.innerHTML='…';
+ try{
+  let j=await (await wsFetch('/api/checkpoint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list'})})).json();
+  if(!j.ok)throw new Error('list failed');
+  d.innerHTML='';
+  let snap=document.createElement('button');snap.textContent='Snapshot now';
+  snap.onclick=async()=>{
+   let m=prompt('Checkpoint note','before risky change');
+   if(m==null)return;
+   try{
+    let r=await (await wsFetch('/api/checkpoint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create',message:m})})).json();
+    if(!r.ok)throw new Error(r.error||'snapshot failed');
+    wsGitRefresh();wsCpRefresh();
+   }catch(e){alert('Snapshot failed: '+e.message);}
+  };
+  d.appendChild(snap);
+  if(!(j.checkpoints||[]).length){let e=document.createElement('div');e.className='sess-empty';e.textContent='No checkpoints yet.';d.appendChild(e);return;}
+  j.checkpoints.forEach(cp=>{
+   let row=document.createElement('div');row.className='cprow';
+   let t=document.createElement('div');t.textContent=new Date(cp.ts*1000).toLocaleString()+' · '+String(cp.sha||'').slice(0,8);
+   let sub=document.createElement('div');sub.className='csub';sub.textContent=(cp.message||'')+(cp.committed?'':' (clean tree)');
+   let btns=document.createElement('div');btns.className='cbtns';
+   let df=document.createElement('button');df.textContent='Diff';
+   df.onclick=async()=>{
+    let ex=row.querySelector('pre');if(ex){ex.remove();return;}
+    try{
+     let r=await (await wsFetch('/api/checkpoint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'diff',id:cp.id})})).json();
+     let pre=document.createElement('pre');pre.textContent=r.ok?r.diff:('ERROR: '+r.error);row.appendChild(pre);
+    }catch(e){alert('Diff failed: '+e.message);}
+   };
+   let rs=document.createElement('button');rs.textContent='Restore';
+   rs.onclick=async()=>{
+    if(!confirm('Restore tracked files to "'+(cp.message||cp.id)+'"? Untracked files stay.'))return;
+    try{
+     let r=await (await wsFetch('/api/checkpoint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'restore',id:cp.id})})).json();
+     if(!r.ok)throw new Error(r.error||'restore failed');
+     delete wsKids[wsRoot];wsKids={};
+     wsPreviewPath=null;document.getElementById('wsPrev').innerHTML='';
+     wsGitRefresh();renderWs();
+     alert('Restored. Untracked files untouched.');
+    }catch(e){alert('Restore failed: '+e.message);}
+   };
+   btns.appendChild(df);btns.appendChild(rs);
+   row.appendChild(t);row.appendChild(sub);row.appendChild(btns);d.appendChild(row);
+  });
+ }catch(e){d.textContent='ERROR: '+e.message;}
+}
 document.getElementById('wsNewFile').onclick=async()=>{
  let n=prompt('New file path (relative to '+(wsRoot||'root')+')');
  if(!n)return;

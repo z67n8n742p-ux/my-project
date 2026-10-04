@@ -99,7 +99,8 @@ def list_jobs() -> str:
     for j in sorted(jobs, key=lambda x: x.get("next_run") or 0):
         nxt = j.get("next_run")
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(nxt)) if nxt else "?"
-        lines.append(f"- {j['id']} [{j.get('schedule')}] next {when} "
+        paused = " PAUSED" if j.get("paused") else ""
+        lines.append(f"- {j['id']} [{j.get('schedule')}]{paused} next {when} "
                      f"last={j.get('last_status') or '-'} :: {j.get('prompt','')[:100]}")
     return "\n".join(lines)
 
@@ -118,7 +119,64 @@ def remove_job(jid: str) -> str:
 
 def due_jobs(now: float = None):
     now = now if now is not None else time.time()
-    return [j for j in _load() if (j.get("next_run") or 0) <= now]
+    return [j for j in _load() if (j.get("next_run") or 0) <= now and not j.get("paused")]
+
+
+def pause_job(jid: str) -> str:
+    jobs = _load()
+    for j in jobs:
+        if j.get("id") == (jid or "").strip():
+            if j.get("paused"):
+                return f"cron job {jid} already paused"
+            j["paused"] = True
+            try:
+                _save(jobs)
+            except Exception as e:
+                return f"cron save error: {e}"
+            return f"cron job {jid} paused"
+    return f"cron: no job {jid}"
+
+
+def resume_job(jid: str) -> str:
+    jobs = _load()
+    for j in jobs:
+        if j.get("id") == (jid or "").strip():
+            j["paused"] = False
+            nxt, err = next_after(j.get("schedule", ""), time.time())
+            if nxt:
+                j["next_run"] = nxt
+            try:
+                _save(jobs)
+            except Exception as e:
+                return f"cron save error: {e}"
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(j["next_run"])) if j.get("next_run") else "?"
+            return f"cron job {jid} resumed (next {when})"
+    return f"cron: no job {jid}"
+
+
+def get_job(jid: str):
+    for j in _load():
+        if j.get("id") == (jid or "").strip():
+            return j
+    return None
+
+
+def run_history(limit: int = 20):
+    """Newest transcript runs: [{job, ts, file, size}]. Never raises."""
+    try:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        files = sorted(RUNS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        out = []
+        for f in files[: max(1, min(limit, 100))]:
+            try:
+                st = f.stat()
+                out.append({"job": f.name.split("-")[0] if "-" in f.name else "?",
+                            "file": f.name, "ts": st.st_mtime, "size": st.st_size})
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
 
 
 def mark_ran(jid: str, status: str) -> None:
@@ -138,8 +196,8 @@ def mark_ran(jid: str, status: str) -> None:
 
 
 def cron_tool(action: str = "list", schedule: str = "", prompt: str = "",
-              model: str = "", job_id: str = "") -> str:
-    """Agent-facing cron. action=list|add|remove. Read-only list is free."""
+               model: str = "", job_id: str = "") -> str:
+    """Agent-facing cron. action=list|add|remove|pause|resume. Read-only list is free."""
     a = (action or "list").strip().lower()
     if a == "list":
         return list_jobs()
@@ -147,7 +205,11 @@ def cron_tool(action: str = "list", schedule: str = "", prompt: str = "",
         return add_job(schedule, prompt, model)
     if a in ("remove", "rm", "delete"):
         return remove_job(job_id or schedule)
-    return f"cron: unknown action {action} (use list|add|remove)"
+    if a == "pause":
+        return pause_job(job_id or schedule)
+    if a in ("resume", "unpause"):
+        return resume_job(job_id or schedule)
+    return f"cron: unknown action {action} (use list|add|remove|pause|resume)"
 
 
 if __name__ == "__main__":
@@ -159,5 +221,9 @@ if __name__ == "__main__":
         print(add_job(sys.argv[2], " ".join(sys.argv[3:])))
     elif cmd in ("remove", "rm") and len(sys.argv) >= 3:
         print(remove_job(sys.argv[2]))
+    elif cmd == "pause" and len(sys.argv) >= 3:
+        print(pause_job(sys.argv[2]))
+    elif cmd in ("resume", "unpause") and len(sys.argv) >= 3:
+        print(resume_job(sys.argv[2]))
     else:
-        print("usage: cron.py list | add <schedule> <prompt...> | remove <id>")
+        print("usage: cron.py list | add <schedule> <prompt...> | remove <id> | pause <id> | resume <id>")

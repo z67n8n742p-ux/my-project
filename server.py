@@ -783,6 +783,40 @@ def _ws_rel(p):
         return ""
 
 
+def _git(*args):
+    """Run git -C ROOT. Returns CompletedProcess or None. Never raises."""
+    try:
+        return subprocess.run(["git", "-C", str(ROOT), *args],
+                              capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+
+
+def _cp_file():
+    from tools import JOBS_DIR as _jd
+    return _jd / "checkpoints.json"
+
+
+def _cp_load():
+    try:
+        p = _cp_file()
+        if p.exists():
+            data = json.loads(p.read_text() or "[]")
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _cp_save(entries):
+    try:
+        p = _cp_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(entries[-20:], indent=1))
+    except Exception:
+        pass
+
+
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
@@ -1446,6 +1480,136 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "path": _ws_rel(dst)})
                 except Exception as e:
                     self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+        elif parsed.path == "/api/cron":
+            # Tasks panel: list|add|remove|pause|resume|run cron jobs.
+            try:
+                import cron as _cron
+            except Exception as e:
+                self.send_json({"ok": False, "error": f"no cron.py: {e}"}, 500)
+                return
+            action = str(data.get("action") or "list").strip().lower()
+            if action == "list":
+                self.send_json({"ok": True, "jobs": _cron._load(), "runs": _cron.run_history()})
+            elif action == "add":
+                msg = _cron.add_job(str(data.get("schedule") or ""),
+                                    str(data.get("prompt") or ""), str(data.get("model") or ""))
+                self.send_json({"ok": not msg.startswith("cron error"), "message": msg},
+                               200 if not msg.startswith("cron error") else 400)
+            elif action in ("remove", "rm", "delete"):
+                self.send_json({"ok": True, "message": _cron.remove_job(str(data.get("job_id") or data.get("id") or ""))})
+            elif action == "pause":
+                self.send_json({"ok": True, "message": _cron.pause_job(str(data.get("job_id") or data.get("id") or ""))})
+            elif action in ("resume", "unpause"):
+                self.send_json({"ok": True, "message": _cron.resume_job(str(data.get("job_id") or data.get("id") or ""))})
+            elif action == "run":
+                job = _cron.get_job(str(data.get("job_id") or data.get("id") or ""))
+                if not job:
+                    self.send_json({"ok": False, "error": "no such job"}, 404)
+                    return
+                t = threading.Thread(target=_cron_run_job, args=(dict(job),),
+                                     name=f"cron-now-{job.get('id')}", daemon=True)
+                t.start()
+                log(f"/api/cron run-now {job.get('id')}")
+                self.send_json({"ok": True, "job_id": job.get("id"), "started": True}, 202)
+            else:
+                self.send_json({"ok": False, "error": "use list|add|remove|pause|resume|run"}, 400)
+        elif parsed.path == "/api/upload":
+            # Workspace browser: upload a file (base64 JSON, no multipart parsing).
+            # Same containment + sensitive-path rules as /api/file.
+            try:
+                from tools import _sensitive_path as _ws_sensitive
+            except Exception:
+                _ws_sensitive = lambda p: None
+            import base64 as _b64
+            rel = str(data.get("path") or "")
+            raw_b64 = str(data.get("data") or "")
+            if not rel or not raw_b64 or len(raw_b64) > 7_000_000:
+                self.send_json({"ok": False, "error": "need path + data (base64, max ~5MB)"}, 400)
+                return
+            p, err = _ws_path(rel)
+            if err or not rel:
+                self.send_json({"ok": False, "error": err or "need path"}, 400)
+                return
+            blocked = _ws_sensitive(str(p))
+            if blocked:
+                self.send_json({"ok": False, "error": f"upload blocked: {blocked}"}, 403)
+                return
+            try:
+                raw = _b64.b64decode(raw_b64, validate=True)
+            except Exception:
+                self.send_json({"ok": False, "error": "bad base64"}, 400)
+                return
+            if len(raw) > 5_000_000:
+                self.send_json({"ok": False, "error": "file too large (max 5MB)"}, 400)
+                return
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(raw)
+                log(f"/api/upload {_ws_rel(p)} {len(raw)} bytes")
+                self.send_json({"ok": True, "path": _ws_rel(p), "size": len(raw)})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)[:200]}, 500)
+        elif parsed.path == "/api/checkpoint":
+            # Rollback checkpoints: git snapshot before risky turns + diff/restore.
+            # create commits dirty work (message marked) or records HEAD if clean.
+            # restore = `git checkout <sha> -- .` (tracked files; untracked stay).
+            action = str(data.get("action") or "list").strip().lower()
+            if action == "list":
+                self.send_json({"ok": True, "checkpoints": list(reversed(_cp_load()))})
+                return
+            if action == "create":
+                msg = str(data.get("message") or "").strip()[:200] or "manual snapshot"
+                h = _git("rev-parse", "HEAD")
+                if not h or h.returncode != 0:
+                    self.send_json({"ok": False, "error": "not a git repo"}, 500)
+                    return
+                st = _git("status", "--porcelain")
+                dirty = bool(st and st.returncode == 0 and st.stdout.strip())
+                if dirty:
+                    _git("add", "-A")
+                    c = _git("commit", "-m", f"checkpoint: {msg}")
+                    if not c or c.returncode != 0:
+                        self.send_json({"ok": False, "error": (c.stderr if c else "commit failed")[:200]}, 500)
+                        return
+                    h = _git("rev-parse", "HEAD")
+                sha = (h.stdout.strip() if h else "")
+                if not sha:
+                    self.send_json({"ok": False, "error": "could not resolve HEAD"}, 500)
+                    return
+                entries = _cp_load()
+                cid = f"cp-{int(time.time())}"
+                entries.append({"id": cid, "sha": sha, "message": msg,
+                                "committed": dirty, "ts": time.time()})
+                _cp_save(entries)
+                log(f"/api/checkpoint create {cid} {sha[:8]} committed={dirty}")
+                self.send_json({"ok": True, "id": cid, "sha": sha, "committed": dirty})
+            elif action == "diff":
+                cid = str(data.get("id") or "")
+                entry = next((e for e in _cp_load() if e.get("id") == cid), None)
+                if not entry:
+                    self.send_json({"ok": False, "error": "no such checkpoint"}, 404)
+                    return
+                d = _git("diff", entry["sha"], "--stat")
+                out = (d.stdout if d and d.returncode == 0 else "")[:4000]
+                st = _git("status", "--porcelain")
+                if st and st.returncode == 0 and st.stdout.strip():
+                    out += "\n--- uncommitted ---\n" + st.stdout[:2000]
+                self.send_json({"ok": True, "id": cid, "diff": out or "(no changes since checkpoint)"})
+            elif action == "restore":
+                cid = str(data.get("id") or "")
+                entry = next((e for e in _cp_load() if e.get("id") == cid), None)
+                if not entry:
+                    self.send_json({"ok": False, "error": "no such checkpoint"}, 404)
+                    return
+                r = _git("checkout", entry["sha"], "--", ".")
+                if not r or r.returncode != 0:
+                    self.send_json({"ok": False, "error": (r.stderr if r else "checkout failed")[:200]}, 500)
+                    return
+                log(f"/api/checkpoint restore {cid} {entry['sha'][:8]}")
+                self.send_json({"ok": True, "id": cid,
+                                "note": "tracked files restored; untracked files stay"})
+            else:
+                self.send_json({"ok": False, "error": "use list|create|diff|restore"}, 400)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1456,13 +1620,8 @@ def _cron_tick():
 
     Best-effort: every failure is caught, marked, and logged. Never raises,
     never blocks chat traffic (runs in its own daemon thread).
-    Overlap guard: a job already running is skipped (belt-and-suspenders —
-    the tick thread is single-threaded, but this stays safe if tick is ever
-    called re-entrantly).
+    Overlap guard lives in _cron_run_job (shared with run-now).
     """
-    if not hasattr(_cron_tick, "_running"):
-        _cron_tick._running = set()
-        _cron_tick._lock = threading.Lock()
     try:
         import cron as _cron
     except Exception as e:
@@ -1474,54 +1633,74 @@ def _cron_tick():
         log(f"cron tick load error: {e}")
         return
     for job in due:
-        jid = job.get("id", "?")
-        with _cron_tick._lock:
-            if jid in _cron_tick._running:
-                log(f"cron job {jid} skipped (already running)")
-                continue
-            _cron_tick._running.add(jid)
+        _cron_run_job(job)
+
+
+def _cron_run_job(job):
+    """Run one cron job now. Shared by the tick loop and run-now.
+
+    Fresh agent per job (no history), max 6 steps. Best-effort: every
+    failure is caught, marked, and logged. Overlap guard: a job already
+    running is skipped. Returns a short status string.
+    """
+    if not hasattr(_cron_run_job, "_running"):
+        _cron_run_job._running = set()
+        _cron_run_job._lock = threading.Lock()
+    try:
+        import cron as _cron
+    except Exception as e:
+        log(f"cron run skipped (no cron.py): {e}")
+        return f"error: {e}"
+    jid = job.get("id", "?")
+    with _cron_run_job._lock:
+        if jid in _cron_run_job._running:
+            log(f"cron job {jid} skipped (already running)")
+            return "skipped (already running)"
+        _cron_run_job._running.add(jid)
+    try:
         try:
-            try:
-                from prompt import build_system_prompt as _build_sys
-                sys_text = _build_sys("")
-            except Exception:
-                sys_text = ""
-            model = job.get("model") or DEFAULT_MODEL
-            try:
-                live = get_live_models()
-                if model not in live:
-                    model = live[0] if live else DEFAULT_MODEL
-            except Exception:
-                pass
-            msgs = []
-            if sys_text:
-                msgs.append({"role": "system", "content": sys_text})
-            msgs.append({"role": "user", "content": job.get("prompt", "")})
-            reply, tool_logs, _, _ = run_agent(msgs, model, max_steps=6,
-                                               live_logs=None, run_id=f"cron-{jid}-{int(time.time())}")
-            # deliver: transcript file + cron session (searchable via session_search)
-            try:
-                _cron.RUNS_DIR.mkdir(parents=True, exist_ok=True)
-                body = f"# cron {jid} @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n## prompt\n\n{job.get('prompt','')}\n\n## reply\n\n{reply}\n\n## tools\n\n" + "\n".join(
-                    f"- {t.get('tool')}: {str(t.get('result',''))[:300]}" for t in (tool_logs or []))
-                (_cron.RUNS_DIR / f"{jid}-{int(time.time())}.md").write_text(body[:50000])
-            except Exception as e:
-                log(f"cron run-save error {jid}: {e}")
-            try:
-                _save_turn(f"cron-{jid}", job.get("prompt", ""), reply, model, tool_logs)
-            except Exception as e:
-                log(f"cron session-save error {jid}: {e}")
-            _cron.mark_ran(jid, "ok")
-            log(f"cron job {jid} ok reply_len={len(reply)}")
+            from prompt import build_system_prompt as _build_sys
+            sys_text = _build_sys("")
+        except Exception:
+            sys_text = ""
+        model = job.get("model") or DEFAULT_MODEL
+        try:
+            live = get_live_models()
+            if model not in live:
+                model = live[0] if live else DEFAULT_MODEL
+        except Exception:
+            pass
+        msgs = []
+        if sys_text:
+            msgs.append({"role": "system", "content": sys_text})
+        msgs.append({"role": "user", "content": job.get("prompt", "")})
+        reply, tool_logs, _, _ = run_agent(msgs, model, max_steps=6,
+                                           live_logs=None, run_id=f"cron-{jid}-{int(time.time())}")
+        # deliver: transcript file + cron session (searchable via session_search)
+        try:
+            _cron.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+            body = f"# cron {jid} @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n## prompt\n\n{job.get('prompt','')}\n\n## reply\n\n{reply}\n\n## tools\n\n" + "\n".join(
+                f"- {t.get('tool')}: {str(t.get('result',''))[:300]}" for t in (tool_logs or []))
+            (_cron.RUNS_DIR / f"{jid}-{int(time.time())}.md").write_text(body[:50000])
         except Exception as e:
-            try:
-                _cron.mark_ran(jid, f"failed: {str(e)[:100]}")
-            except Exception:
-                pass
-            log(f"cron job {jid} ERROR: {e}")
-        finally:
-            with _cron_tick._lock:
-                _cron_tick._running.discard(jid)
+            log(f"cron run-save error {jid}: {e}")
+        try:
+            _save_turn(f"cron-{jid}", job.get("prompt", ""), reply, model, tool_logs)
+        except Exception as e:
+            log(f"cron session-save error {jid}: {e}")
+        _cron.mark_ran(jid, "ok")
+        log(f"cron job {jid} ok reply_len={len(reply)}")
+        return "ok"
+    except Exception as e:
+        try:
+            _cron.mark_ran(jid, f"failed: {str(e)[:100]}")
+        except Exception:
+            pass
+        log(f"cron job {jid} ERROR: {e}")
+        return f"error: {e}"
+    finally:
+        with _cron_run_job._lock:
+            _cron_run_job._running.discard(jid)
 
 
 def _cron_start(interval_s: int = 30):

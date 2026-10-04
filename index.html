@@ -197,6 +197,7 @@ aside[data-slot="inspector"]{flex:1;border-left:1px solid var(--border);padding:
 .tool-head:hover{background:var(--hover)}
 .tool-head .caret{color:var(--faint);font-size:10px;width:12px}
 .tool-head .fname{font-family:var(--mono);font-weight:600}
+.tool-head .k{font-family:var(--mono);font-size:10px;color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:0 4px;text-transform:uppercase;letter-spacing:.03em}
 .tool-head .fsub{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .tool-body{display:none;padding:6px 8px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
 .tool.open .tool-body{display:block}
@@ -332,6 +333,12 @@ button:active{transform:scale(.96)}
 .cprow pre{background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:6px;overflow:auto;max-height:200px;font-size:11px;white-space:pre-wrap}
 /* terminal tab + skills tab + voice */
 #micBtn.rec{border-color:var(--error);color:var(--error)}
+#waveCard{display:none;align-items:center;gap:8px;background:var(--layer-2);border:1px solid var(--border-strong);border-radius:10px;padding:6px 10px;animation:pop-in .12s ease-out}
+#waveCard.open{display:flex}
+#waveCard .dot{width:8px;height:8px;border-radius:50%;background:var(--error);animation:pulse-dot 1.2s ease-in-out infinite;flex:none}
+#waveCv{width:220px;height:40px;flex:1;min-width:0}
+#waveT{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:34px}
+#waveCard button{font-size:12px;padding:4px 10px}
 #termOut{background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:8px;overflow:auto;max-height:46vh;min-height:160px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word}
 #termRow{display:flex;gap:6px;align-items:center;margin-top:6px}
 #termRow input{flex:1;font-family:var(--mono);font-size:12px}
@@ -369,8 +376,8 @@ button:active{transform:scale(.96)}
  <span id="status" style="font-size:12px;color:var(--muted)"></span>
  <button id="livePill" title="What the model is thinking now — click to jump to it">● LIVE</button>
 <span style="flex:1"></span>
-<button id="inspBtn" title="Toggle workspace panel">🗂</button>
-<button id="ccBtn" title="Control Center — session, prefs, system">⚙</button>
+<button id="inspBtn" title="Toggle workspace panel">Files</button>
+<button id="ccBtn" title="Control Center — session, prefs, system">Prefs</button>
 <button id="toolsBtn" title="Collapse/expand all tool cards">⧉</button>
 <button id="newBtn" title="New session">+ New</button>
 </header>
@@ -381,13 +388,13 @@ button:active{transform:scale(.96)}
 <div id="sessTools"><button id="importBtn" title="Import session from JSON">Import</button><button id="archBtn" title="Show/hide archived">Archived</button></div>
 <input type="file" id="importFile" accept=".json,application/json" style="display:none">
 <div id="sessList"></div>
-<button id="ccSideBtn" title="Control Center" style="font-size:12px;color:var(--muted)">⚙ Control Center</button>
+<button id="ccSideBtn" title="Control Center" style="font-size:12px;color:var(--muted)">Control Center</button>
 </aside>
 <main data-slot="session-chat-panel">
 <div id="msgs" data-slot="timeline"></div>
 <button id="jumpBtn" title="Scroll to latest">↓</button>
 <div id="apprCard" style="display:none;border:1px solid var(--accent);border-radius:8px;padding:8px 10px;margin:6px 0;background:var(--accent-bg,#fff8e6);animation:pop-in .18s ease-out">
- <div style="font-size:13px"><b>⚠️ Approval needed</b> <span id="apprReason" style="color:var(--muted)"></span></div>
+ <div style="font-size:13px"><b>Approval needed</b> <span id="apprReason" style="color:var(--muted)"></span></div>
  <div id="apprCmd" style="font-family:monospace;font-size:12px;margin:6px 0;white-space:pre-wrap;word-break:break-word"></div>
  <div style="display:flex;gap:6px;flex-wrap:wrap">
   <button onclick="respondApproval('once')">Allow once</button>
@@ -396,7 +403,8 @@ button:active{transform:scale(.96)}
   <button onclick="respondApproval('deny')">Deny</button>
  </div>
 </div>
-<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands…" title="Slash: /help /clear /compact /model /new /usage /theme · paste workspace://path to open a file"></textarea><button id="attachBtn" title="Attach a file (text is pasted in, other files are stored)">📎</button><button id="micBtn" title="Voice input">🎤</button><button id="sendBtn" onclick="send()">Send</button></div>
+<div id="waveCard"><span class="dot" title="Recording"></span><canvas id="waveCv" width="220" height="40"></canvas><span id="waveT">0:00</span><button id="waveStop" title="Stop recording">Stop</button></div>
+<div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands…" title="Slash: /help /clear /compact /model /new /usage /theme · paste workspace://path to open a file"></textarea><button id="attachBtn" title="Attach a file (text is pasted in, other files are stored)">File</button><button id="micBtn" title="Voice input">Mic</button><button id="sendBtn" onclick="send()">Send</button></div>
 <input type="file" id="attachFile" style="display:none">
 <div id="slashMenu"></div>
 <div id="ctxRow" title="Estimated context use for this session"><div id="ctxBar"><div id="ctxFill"></div></div><span id="ctxTxt">ctx —</span></div>
@@ -429,7 +437,7 @@ button:active{transform:scale(.96)}
 <div id="skillPrev"></div>
 </div>
 <div id="tabFiles" style="display:none">
-<div id="wsHead"><span id="wsGit" title="git branch + dirty count"></span><span style="flex:1"></span><button id="wsNewFile" title="New file in this folder">+File</button><button id="wsNewDir" title="New folder">+Dir</button><button id="wsUpBtn" title="Upload files here">+Up</button><button id="wsCpBtn" title="Rollback checkpoints">⏪</button></div>
+<div id="wsHead"><span id="wsGit" title="git branch + dirty count"></span><span style="flex:1"></span><button id="wsNewFile" title="New file in this folder">+File</button><button id="wsNewDir" title="New folder">+Dir</button><button id="wsUpBtn" title="Upload files here">+Up</button><button id="wsCpBtn" title="Rollback checkpoints">Snaps</button></div>
 <input type="file" id="wsUpFile" multiple style="display:none">
 <div id="wsCp" style="display:none"></div>
 <div id="wsCrumbs"></div>
@@ -680,12 +688,12 @@ document.addEventListener('click',e=>{if(!document.getElementById('modelWrap').c
 
 // ---------- tool renderer (one collapsible, family switch) ----------
 function familyOf(t){
- if(['read','edit','write','apply_patch','extract'].includes(t))return{icon:'📄',label:'file'};
- if(['bash','process'].includes(t))return{icon:'⌨',label:'shell'};
- if(['grep','glob','lsp'].includes(t))return{icon:'🔍',label:'search'};
- if(['webfetch','websearch'].includes(t))return{icon:'🌐',label:'web'};
-  if(['subagent','models','question','skill','skill_manage','todowrite','cron','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'🤖',label:'agent'};
- return{icon:'🔧',label:'tool'};
+ if(['read','edit','write','apply_patch','extract'].includes(t))return{icon:'doc',label:'file'};
+ if(['bash','process'].includes(t))return{icon:'sh',label:'shell'};
+ if(['grep','glob','lsp'].includes(t))return{icon:'src',label:'search'};
+ if(['webfetch','websearch'].includes(t))return{icon:'web',label:'web'};
+  if(['subagent','models','question','skill','skill_manage','todowrite','cron','memory','session_search','mcp_list_resources','mcp_read_resource'].includes(t))return{icon:'agt',label:'agent'};
+ return{icon:'tool',label:'tool'};
 }
 function subOf(tool,args){
  try{
@@ -714,7 +722,7 @@ function renderTool(x,quiet){
     let d=document.createElement('div');d.className='tool think';
     let head=document.createElement('div');head.className='tool-head';
     let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
-    let icon=document.createElement('span');icon.textContent='💭';
+    let icon=document.createElement('span');icon.className='k';icon.textContent='thk';
     let fn=document.createElement('span');fn.className='fname';fn.textContent='thinking';
     let fs=document.createElement('span');fs.className='fsub';fs.textContent='reasoning — click to expand';
     head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
@@ -727,14 +735,14 @@ function renderTool(x,quiet){
     return;
    }
     let f=familyOf(x.tool);
-   if(x.tool==='subagent')f={icon:'🛰️',label:'subagent'};
+   if(x.tool==='subagent')f={icon:'sub',label:'subagent'};
   let d=document.createElement('div');d.className='tool';
   if(x.tool==='subagent')d.classList.add('sub');
   let res=String(x.result||'');
   if(/\b(error|failed|failure|not found|traceback|exception)\b/i.test(res.slice(0,300))&&!/\b(0 errors?|no errors?|error-free|exit 0)\b/i.test(res.slice(0,300)))d.classList.add('err');
  let head=document.createElement('div');head.className='tool-head';
  let caret=document.createElement('span');caret.className='caret';caret.textContent='▶';
- let icon=document.createElement('span');icon.textContent=f.icon;
+  let icon=document.createElement('span');icon.className='k';icon.textContent=f.icon;
  let fn=document.createElement('span');fn.className='fname';fn.textContent=x.tool;
  let fs=document.createElement('span');fs.className='fsub';fs.textContent=subOf(x.tool,x.args||{});
  head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
@@ -836,6 +844,7 @@ async function init(){
   let s=await (await fetch(apiUrl('/api/system'))).json();
   document.getElementById('sys').value=s.system||'';
    renderSessions();rerenderMsgs();
+   try{md('');}catch(e){}
    try{await wsSpaces();}catch(e){}
   }catch(e){
   document.getElementById('status').textContent='BACKEND UNREACHABLE';
@@ -843,8 +852,10 @@ async function init(){
  }
 }
 async function saveSys(){
- await fetch(apiUrl('/api/system'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:document.getElementById('sys').value})});
- alert('saved to system_prompt.md');
+ try{
+  await fetch(apiUrl('/api/system'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:document.getElementById('sys').value})});
+  alert('saved to system_prompt.md');
+ }catch(e){alert('Save failed: '+(e.message||e));}
 }
 // ---------- lightweight markdown (v2 markdown.css treatment, no deps) ----------
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -858,7 +869,8 @@ function inline(s){
   return s;
 }
 function md(src){
- let fences=[];
+ try{window.hl=hl;}catch(e){}
+  let fences=[];
   // prism-lite: string/comment-first tokenizer per language, so keywords
   // inside strings are never highlighted. Zero deps, offline-safe.
   function hlRun(code,re,cls){
@@ -1021,6 +1033,12 @@ function ctxWin(m){m=String(m||'').toLowerCase();
  if(m.indexOf('deepseek')>=0)return 128000;
  return 128000;}
 function updateCtx(){
+ // trailing-edge debounce: keystroke storms collapse into one scan
+ try{clearTimeout(window._ctxD);}catch(e){}
+ window._ctxD=setTimeout(()=>{try{_updateCtxReal();}catch(e){}},150);
+ return;
+}
+function _updateCtxReal(){
  try{
   let h=(typeof cur==='function'&&cur())?(cur().history||[]):[];
   let chars=0,inC=0,outC=0;
@@ -1190,11 +1208,11 @@ async function send(){
    addMsg('user',msg,false,nowTs,-1);echoed=true;
   try{
     let s=await (await fetch(apiUrl('/api/steer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
-   if(s.ok){steerBuffer.push(msg);return;}
+    if(s.ok){if(steerBuffer.length<5)steerBuffer.push(msg);else addMsg('assistant','(follow-up queue full — oldest kept, newest dropped)');return;}
    // run finished between keystroke and POST: fall through to normal new chat below
    isRunning=false;currentRid=null;
    addMsg('assistant','... previous run finished, sending as new chat ...');
-  }catch(e){steerBuffer.push(msg);return;}
+   }catch(e){if(steerBuffer.length<5)steerBuffer.push(msg);return;}
  }
   if(!echoed)var userEl=addMsg('user',msg,false,nowTs,-1);else var userEl=null;
  let history=cur().history||[];
@@ -1244,12 +1262,12 @@ async function send(){
      if(pill)pill.title='What the model is thinking now — click to jump\n\n'+liveThink.slice(-160);
     }
     function liveThinkAppend(t){
-     liveThink+=t;
+     liveThink=(liveThink+t).slice(-20000);
      if(!window._liveThinkCard){
       let card=document.createElement('div');card.className='tool think open';
       let head=document.createElement('div');head.className='tool-head';
       let caret=document.createElement('span');caret.className='caret';caret.textContent='▼';
-      let icon=document.createElement('span');icon.textContent='💭';
+      let icon=document.createElement('span');icon.className='k';icon.textContent='thk';
       let fn=document.createElement('span');fn.className='fname';fn.textContent='thinking';
       let fs=document.createElement('span');fs.className='fsub';fs.textContent='live — click to collapse';
       head.appendChild(caret);head.appendChild(icon);head.appendChild(fn);head.appendChild(fs);headAttrs(head);
@@ -1511,9 +1529,8 @@ async function renderWs(){
 function wsRow(en,rel,depth){
  let d=document.createElement('div');d.className='wsrow';
  let caret=document.createElement('span');caret.textContent=en.type==='dir'?(wsKids[rel]?'▼':'▶'):'·';caret.style.color='var(--faint)';caret.style.width='12px';
- let icon=document.createElement('span');icon.textContent=en.type==='dir'?'📁':'📄';
- let nm=document.createElement('span');nm.className='nm';nm.textContent=en.name;nm.title=rel;
- d.appendChild(caret);d.appendChild(icon);d.appendChild(nm);
+ let nm=document.createElement('span');nm.className='nm';nm.textContent=en.name+(en.type==='dir'?'/':'');nm.title=rel;
+ d.appendChild(caret);d.appendChild(nm);
  d.onclick=()=>{
   if(en.type==='dir'){wsToggle(rel);}
   else wsPreview(rel);
@@ -1572,7 +1589,7 @@ async function wsPreview(rel){
   }else if(wsLang(rel)==='txt'){
    let pre=document.createElement('pre');pre.textContent=j.text;box.appendChild(pre);
   }else{
-   let pre=document.createElement('pre');pre.innerHTML=hl(j.text,wsLang(rel));box.appendChild(pre);
+    let pre=document.createElement('pre');pre.innerHTML=(window.hl||esc)(j.text,wsLang(rel));box.appendChild(pre);
   }
   wsCrud(meta,rel,true,j.text);
  }catch(e){meta.textContent='ERROR: '+e.message;}
@@ -1717,7 +1734,9 @@ async function wsSpaces(){
  }catch(e){sel.innerHTML='';let o=document.createElement('option');o.textContent='(workspace?)';sel.appendChild(o);}
 }
 async function wsSwitch(path){
+ if(!wsGuard()){try{await wsSpaces();}catch(e){}return;}
  try{
+  if(termId){try{await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'kill',id:termId})});}catch(e){}termId=null;stopTermTimer();termStat('workspace switched — New to restart');}
   let r=await (await wsFetch('/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'use',path})})).json();
   if(!r.ok)throw new Error(r.error||'switch failed');
   window._wsActive=r.active;
@@ -1854,7 +1873,7 @@ function cronToast(runs){
   if(prev<0||n<=prev||!n)return;
   document.querySelectorAll('.tippill.cron').forEach(x=>x.remove());
   let p=document.createElement('div');p.className='tippill cron';
-  let s=document.createElement('span');s.textContent='⏰ Cron finished: '+runs[0].file+' — click to view';
+  let s=document.createElement('span');s.textContent='Cron finished: '+runs[0].file+' — click to view';
   p.onclick=()=>{p.remove();wsShow('files');wsPreview('.cron/runs/'+runs[0].file);};
   let x=document.createElement('button');x.textContent='×';x.title='Dismiss';x.onclick=e=>{e.stopPropagation();p.remove();};
   p.appendChild(s);p.appendChild(x);document.body.appendChild(p);
@@ -1979,6 +1998,59 @@ document.addEventListener('click',e=>{
   document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
  };
 })();
+// ---------- mic wave card (Web Audio analyser, zero-dep) ----------
+let waveCtx=null,waveStream=null,waveAn=null,waveRaf=0,waveT0=0,waveTimer=null;
+function waveDraw(){
+ try{
+  let cv=document.getElementById('waveCv');if(!cv||!waveAn)return;
+  let c=cv.getContext('2d'),W=cv.width,H=cv.height;
+  let data=new Uint8Array(waveAn.fftSize);
+  waveAn.getByteTimeDomainData(data);
+  c.clearRect(0,0,W,H);
+  let ac='#7fd07f';
+  try{ac=getComputedStyle(document.documentElement).getPropertyValue('--accent-text').trim()||ac;}catch(e){}
+  c.strokeStyle=ac;c.lineWidth=2;c.beginPath();
+  let step=Math.max(1,Math.floor(data.length/W));
+  for(let x=0;x<W;x++){
+   let v=data[Math.min(data.length-1,x*step)]/128-1;
+   let y=H/2+v*(H/2-2);
+   if(x===0)c.moveTo(x,y);else c.lineTo(x,y);
+  }
+  c.stroke();
+ }catch(e){}
+ waveRaf=requestAnimationFrame(waveDraw);
+}
+function waveTick(){
+ try{
+  let s=Math.floor((((window.performance&&performance.now())||Date.now())-waveT0)/1000);
+  document.getElementById('waveT').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+ }catch(e){}
+}
+async function waveStart(){
+ try{
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){try{waveStop();}catch(e){}return;}
+  let card=document.getElementById('waveCard');if(card)card.classList.add('open');
+  waveT0=(window.performance&&performance.now())||Date.now();
+  clearInterval(waveTimer);waveTimer=setInterval(waveTick,500);waveTick();
+  try{
+   waveStream=await navigator.mediaDevices.getUserMedia({audio:true});
+   if(!waveCtx)waveCtx=new (window.AudioContext||window.webkitAudioContext)();
+   if(waveCtx.state==='suspended')await waveCtx.resume();
+   let src=waveCtx.createMediaStreamSource(waveStream);
+   waveAn=waveCtx.createAnalyser();waveAn.fftSize=512;
+   src.connect(waveAn);
+   cancelAnimationFrame(waveRaf);waveRaf=requestAnimationFrame(waveDraw);
+  }catch(e){waveAn=null;try{document.getElementById('waveT').textContent='no mic';}catch(_){}}
+ }catch(e){}
+}
+function waveStop(){
+ try{
+  cancelAnimationFrame(waveRaf);clearInterval(waveTimer);
+  if(waveStream){waveStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});waveStream=null;}
+  waveAn=null;
+  document.getElementById('waveCard').classList.remove('open');
+ }catch(e){}
+}
 // ---------- voice input (Web Speech, frontend-only; hidden if unsupported) ----------
 let rec=null,recBase='';
 try{if(!(window.SpeechRecognition||window.webkitSpeechRecognition))document.getElementById('micBtn').style.display='none';}catch(e){}
@@ -1998,10 +2070,11 @@ document.getElementById('micBtn').onclick=()=>{
   autogrow();
   if(final)recBase=document.getElementById('in').value;
  };
- rec.onend=()=>{rec=null;try{document.getElementById('micBtn').classList.remove('rec');}catch(e){}};
+  rec.onend=()=>{rec=null;try{waveStop();}catch(e){}try{document.getElementById('micBtn').classList.remove('rec');}catch(e){}};
  rec.onerror=()=>{try{rec.stop();}catch(e){}};
- try{rec.start();document.getElementById('micBtn').classList.add('rec');}catch(e){rec=null;}
+  try{rec.start();document.getElementById('micBtn').classList.add('rec');waveStart();}catch(e){rec=null;}
 };
+document.getElementById('waveStop').onclick=()=>{if(rec){try{rec.stop();}catch(e){}return;}try{waveStop();}catch(e){}};
 // ---------- terminal (your own shell on a real pty; 1s poll) ----------
 let termId=null,termOff=0,termTimer=null,termHist=[],termHi=-1;
 function termStat(t){try{document.getElementById('termStat').textContent=t;}catch(e){}}
@@ -2055,6 +2128,7 @@ async function termSend(data){
 }
 document.getElementById('termNew').onclick=async()=>{
  stopTermTimer();
+ if(termId){try{await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'kill',id:termId})});}catch(e){}termId=null;}
  try{
   let r=await (await wsFetch('/api/term',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create',cols:100,rows:30})})).json();
   if(!r.ok)throw new Error(r.error||'create failed');
@@ -2163,7 +2237,7 @@ document.getElementById('skillNew').onclick=async()=>{
   skillRefresh();skillPreview(n);
  }catch(e){alert('Create failed: '+e.message);}
 };
-document.getElementById('skillSearch').addEventListener('input',()=>{try{skillRefresh();}catch(e){}});
+document.getElementById('skillSearch').addEventListener('input',()=>{try{clearTimeout(window._skT);}catch(e){}try{window._skT=setTimeout(()=>skillRefresh(),300);}catch(e){}});
 init();
 </script>
 </body></html>

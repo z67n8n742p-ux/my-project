@@ -31,7 +31,10 @@ def _load():
 
 def _save(jobs) -> None:
     CRON_DIR.mkdir(parents=True, exist_ok=True)
-    JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+    tmp = JOBS_FILE.with_name(JOBS_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(jobs, indent=2))
+    import os as _os
+    _os.replace(tmp, JOBS_FILE)
 
 
 def parse_schedule(spec: str, now: float = None):

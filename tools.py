@@ -1356,7 +1356,7 @@ def subagent(description: str = "", prompt: str = "", model: str = "") -> str:
         return "subagent error: MAXPLUS_API_KEY not set"
     use_model = (model or "").strip() or os.getenv("MAXPLUS_MODEL", os.getenv("OPENCODE_MODEL", "glm-5.3-flash"))
     try:
-        client = OpenAI(base_url=base_url, api_key=api_key)
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=180)
         nested_specs = [t for t in TOOLS_SPECS
                         if t["function"]["name"] not in ("subagent", "question")]
         msgs = [{"role": "user", "content": prompt}]

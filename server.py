@@ -118,6 +118,16 @@ RUNS = {}
 RUNS_LOCK = threading.Lock()
 
 
+def _prune_runs():
+    """Drop runs older than 10 min. Caller must hold RUNS_LOCK. Never raises."""
+    try:
+        now = time.time()
+        for k in [k for k, v in RUNS.items() if now - v.get("ts", now) > 600]:
+            del RUNS[k]
+    except Exception:
+        pass
+
+
 def _is_retryable(exc: Exception) -> bool:
     """P0-3: retry only rate-limit / 5xx / transport. Never 4xx (bad key, unknown model, bad request)."""
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None) or getattr(exc, "http_status", None)
@@ -162,6 +172,8 @@ def _emit_run(run_id, key, value):
             if run is None:
                 return
             run.setdefault(key, []).append(value)
+            if len(run[key]) > 2000:
+                del run[key][: len(run[key]) - 2000]
             run["ts"] = time.time()
     except Exception:
         pass
@@ -741,8 +753,21 @@ def _chat_admit(data):
         RUNS[run_id] = {"logs": [], "done": False, "reply": None, "ts": time.time(), "steer": [],
                         "stream": [], "thinking": [], "marks": [], "tools": [],
                         "interrupted": False, "error": None, "sid": session_id}
+        _prune_runs()
     return ("fresh", {"run_id": run_id, "model": model, "system": system,
                       "history": history, "user_msg": user_msg, "session_id": session_id})
+
+
+def _atomic_write(path, text):
+    """Write via tmp+rename so a crash can't leave a torn JSON file. Never raises."""
+    import os as _os
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
+        tmp.write_text(text)
+        _os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _ws_state_file():
@@ -769,11 +794,7 @@ def _ws_state():
 
 
 def _ws_save(st):
-    try:
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        _ws_state_file().write_text(json.dumps(st, indent=1))
-    except Exception:
-        pass
+    _atomic_write(_ws_state_file(), json.dumps(st, indent=1))
 
 
 def _ws_active():
@@ -853,12 +874,7 @@ def _cp_load():
 
 
 def _cp_save(entries):
-    try:
-        p = _cp_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(entries[-20:], indent=1))
-    except Exception:
-        pass
+    _atomic_write(_cp_file(), json.dumps(entries[-20:], indent=1))
 
 
 TERMS = {}
@@ -935,8 +951,10 @@ def _term_create(cols=100, rows=30):
     try:
         with TERMS_LOCK:
             now = time.time()
-            for tid in [k for k, t in TERMS.items() if now - t.get("active", now) > 1800]:
-                _term_kill(tid)
+            stale = [k for k, t in TERMS.items() if now - t.get("active", now) > 1800]
+        for tid in stale:
+            _term_kill(tid)
+        with TERMS_LOCK:
             if len(TERMS) >= TERM_MAX:
                 return None, f"too many terminals (max {TERM_MAX})"
         pid, fd = _pty.fork()
@@ -971,7 +989,7 @@ def _term_create(cols=100, rows=30):
 
 
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY, timeout=180)
     tool_logs = []
     cur_model = model  # fallback may switch mid-run; rest of run stays on working model
     for step_n in range(max_steps):
@@ -1064,11 +1082,14 @@ class Handler(BaseHTTPRequestHandler):
         log(f"{self.address_string()} {self.command} {self.path} :: {fmt % args}")
     def send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
         log(f"-> {self.path} {code} ({len(body)}b)")
 
     def _emit_result(self, rid, stored=None):
@@ -1230,9 +1251,7 @@ class Handler(BaseHTTPRequestHandler):
             rid = (q.get("run") or [""])[0]
             with RUNS_LOCK:
                 # prune runs older than 10 min (keep dict small)
-                now = time.time()
-                for k in [k for k, v in RUNS.items() if now - v.get("ts", now) > 600]:
-                    del RUNS[k]
+                _prune_runs()
                 run = RUNS.get(rid)
                 if not run:
                     self.send_json({"ok": False, "error": "unknown run"}, 404)
@@ -1623,6 +1642,9 @@ class Handler(BaseHTTPRequestHandler):
                 if err or not rel:
                     self.send_json({"ok": False, "error": err or "need path"}, 400)
                     return
+                if p.resolve() == _ws_active().resolve():
+                    self.send_json({"ok": False, "error": "refusing to delete the workspace root"}, 400)
+                    return
                 blocked = _ws_sensitive(str(p))
                 if blocked:
                     self.send_json({"ok": False, "error": f"delete blocked: {blocked}"}, 403)
@@ -1644,6 +1666,9 @@ class Handler(BaseHTTPRequestHandler):
                 dst, err2 = _ws_path(str(data.get("to") or ""))
                 if err1 or err2 or not str(data.get("from") or "").strip() or not str(data.get("to") or "").strip():
                     self.send_json({"ok": False, "error": err1 or err2 or "need from + to"}, 400)
+                    return
+                if src.resolve() == _ws_active().resolve():
+                    self.send_json({"ok": False, "error": "refusing to move the workspace root"}, 400)
                     return
                 blocked = _ws_sensitive(str(src)) or _ws_sensitive(str(dst))
                 if blocked:
@@ -1957,7 +1982,9 @@ def _cron_tick():
         log(f"cron tick load error: {e}")
         return
     for job in due:
-        _cron_run_job(job)
+        t = threading.Thread(target=_cron_run_job, args=(dict(job),),
+                             name=f"cron-tick-{job.get('id')}", daemon=True)
+        t.start()
 
 
 def _cron_run_job(job):
@@ -2062,4 +2089,9 @@ if __name__ == "__main__":
             webbrowser.open(f"http://localhost:{PORT}")
         except Exception:
             pass
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    try:
+        ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    except OSError as e:
+        if getattr(e, "errno", None) == 48 or "already in use" in str(e).lower() or "address in use" in str(e).lower():
+            raise SystemExit(f"port {PORT} is already in use — is another server.py running? (pkill -f server.py)")
+        raise

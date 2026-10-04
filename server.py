@@ -1551,7 +1551,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)[:200]}, 500)
         elif parsed.path == "/api/checkpoint":
             # Rollback checkpoints: git snapshot before risky turns + diff/restore.
-            # create commits dirty work (message marked) or records HEAD if clean.
+            # create commits tracked-file changes only (git add -u: deliberately
+            # untracked files stay out) or records HEAD if clean.
             # restore = `git checkout <sha> -- .` (tracked files; untracked stay).
             action = str(data.get("action") or "list").strip().lower()
             if action == "list":
@@ -1566,7 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = _git("status", "--porcelain")
                 dirty = bool(st and st.returncode == 0 and st.stdout.strip())
                 if dirty:
-                    _git("add", "-A")
+                    _git("add", "-u")
                     c = _git("commit", "-m", f"checkpoint: {msg}")
                     if not c or c.returncode != 0:
                         self.send_json({"ok": False, "error": (c.stderr if c else "commit failed")[:200]}, 500)

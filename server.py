@@ -165,6 +165,15 @@ def _emit_run(run_id, key, value):
         pass
 
 
+try:
+    # Web approval cards: dangerous bash in a live run parks a pending card
+    # (approval.py) and fans out here for SSE. Never breaks boot.
+    import approval as _approval_mod
+    _approval_mod.set_emitter(_emit_run)
+except Exception:
+    pass
+
+
 def _append_thinking(tool_logs, live_logs, run_id, thinking):
     """Persist one step's reasoning as a thinking tool entry (UI card + export + history)."""
     entry = {"tool": "thinking", "args": {}, "result": (thinking or "")[:2000]}
@@ -376,10 +385,24 @@ def _save_turn(sid: str, user_msg: str, reply: str, model: str, tool_logs) -> No
             tool_names = ",".join(t.get("tool", "") for t in (tool_logs or []))[:500]
             c.execute("INSERT INTO messages(session_id,role,content,tool_name,timestamp) VALUES(?,?,?,?,?)",
                       (sid, "assistant", reply, tool_names, time.time()))
+            # Bound the table: keep newest 20k rows (runs pruned at 24h in
+            # _store_init; messages had no cap and grew unbounded).
+            c.execute("DELETE FROM messages WHERE id NOT IN "
+                      "(SELECT id FROM messages ORDER BY id DESC LIMIT 20000)")
             c.commit()
             c.close()
     except Exception as e:
         log(f"messages mirror error {sid}: {e}")
+    # FTS orphan sweep (no-FTS5 builds: table missing — must never roll back
+    # the inserts above, so this runs in its own transaction).
+    try:
+        with DB_LOCK:
+            c = _db()
+            c.execute("DELETE FROM messages_fts WHERE rowid NOT IN (SELECT id FROM messages)")
+            c.commit()
+            c.close()
+    except Exception:
+        pass
 
 
 STORE_DB = SESSIONS_DIR / "store.db"
@@ -562,6 +585,164 @@ def _maybe_compact(client, model, messages, run_id=None, live_logs=None, tool_lo
     return info
 
 
+def _strip_compact_echo(messages, reply):
+    """Drop compacted-summary text the model echoed back into its reply.
+
+    Compaction inserts a SUMMARY_PREFIX system message; models sometimes
+    parrot it (prefix and/or summary body) into the final response, which
+    then persists via _save_turn and gets re-fed as history — duplicates
+    grow every turn. Strips the prefix block and a leading echo of any
+    known summary body. Never raises; returns reply unchanged on doubt.
+    """
+    try:
+        from tools import SUMMARY_PREFIX as _PREFIX
+    except Exception:
+        return reply
+    try:
+        if not reply:
+            return reply
+        out = str(reply)
+        if _PREFIX in out:
+            # cut the echoed prefix block (prefix line + following summary paragraph)
+            parts = out.split(_PREFIX)
+            head = parts[0]
+            for tail in parts[1:]:
+                nl = tail.find("\n\n")
+                tail = tail[nl + 2:] if nl != -1 else ""
+                head += tail
+            out = head
+        # leading echo of a summary body: compare against each summary in history
+        bodies = []
+        for m in (messages or []):
+            c = str(m.get("content") or "")
+            if c.startswith(_PREFIX) and len(c) > len(_PREFIX) + 100:
+                bodies.append(c[len(_PREFIX):].strip())
+        norm = lambda s: " ".join(str(s).split())
+        needle = norm(out)[:400]
+        for b in bodies:
+            bn = norm(b)[:400]
+            if bn and (needle.startswith(bn[:200]) or bn[:200] in needle[:400]):
+                # strip first occurrence of the echoed body
+                idx = out.find(b[:200])
+                if idx != -1:
+                    out = (out[:idx] + out[idx + len(b):])
+                break
+        out = out.strip()
+        return out if out else reply
+    except Exception:
+        return reply
+
+
+def _execute_chat(run_id, model, system, history, user_msg, session_id):
+    """Run one chat turn to completion: agent loop + persist + claims.
+
+    Shared core for blocking POST /api/chat and background /api/chat/start.
+    Records outcome (reply/tools/interrupted/error) in RUNS for SSE replay
+    and GET /api/chat/result. Never raises.
+    """
+    try:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        # history: [{role, content}] from frontend (user/assistant text only)
+        for h in history[-60:]:
+            if h.get("role") in ("user", "assistant") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": user_msg})
+        with RUNS_LOCK:
+            live = RUNS[run_id]["logs"] if run_id in RUNS else None
+        _claim_start(run_id)
+        log(f"/api/chat model={model} run={run_id} msg_len={len(user_msg)} hist={len(history)} sys_len={len(system)}")
+        try:
+            reply, tool_logs, _, interrupted = run_agent(messages, model, live_logs=live, run_id=run_id)
+            with RUNS_LOCK:
+                if run_id in RUNS:
+                    RUNS[run_id].update({"done": True, "reply": reply, "tools": tool_logs,
+                                         "interrupted": interrupted, "ts": time.time()})
+            _save_turn(session_id, user_msg, reply, model, tool_logs)
+            _claim_finish(run_id, reply, tool_logs, status="interrupted" if interrupted else "done")
+            log(f"/api/chat OK reply_len={len(reply)} tools={[t.get('tool') for t in tool_logs]} interrupted={interrupted}")
+        except Exception as e:
+            with RUNS_LOCK:
+                if run_id in RUNS:
+                    RUNS[run_id].update({"done": True, "error": str(e), "ts": time.time()})
+            _claim_fail(run_id)
+            log(f"/api/chat ERROR: {e}")
+    except Exception as e:
+        try:
+            with RUNS_LOCK:
+                if run_id in RUNS:
+                    RUNS[run_id].update({"done": True, "error": str(e), "ts": time.time()})
+            _claim_fail(run_id)
+        except Exception:
+            pass
+        log(f"/api/chat SETUP ERROR run={run_id}: {e}")
+
+
+def _chat_admit(data):
+    """Shared admission for /api/chat + /api/chat/start.
+
+    Returns ("respond", (code, payload)) when the request is answered
+    immediately (validation error, idempotent dedup hit, already-running,
+    queued), else ("fresh", req-dict) for the caller to execute.
+    """
+    if not API_KEY:
+        return ("respond", (400, {"ok": False, "error": "MAXPLUS_API_KEY not set. export MAXPLUS_API_KEY=ccsk-... then restart server.py"}))
+    model = data.get("model") or DEFAULT_MODEL
+    live = get_live_models()
+    if model not in live:
+        return ("respond", (400, {"ok": False, "error": f"unknown model '{model}'. Valid: {', '.join(live)}"}))
+    system = data.get("system") or ""
+    # Glow-up: assemble SOUL + AGENTS + memory snapshot around UI text.
+    # Falls back to raw UI text if prompt.py missing — UI contract unchanged.
+    try:
+        from prompt import build_system_prompt as _build_sys
+        system = _build_sys(system)
+    except Exception:
+        pass
+    history = data.get("history") or []
+    user_msg = (data.get("message") or "").strip()
+    if not user_msg:
+        return ("respond", (400, {"ok": False, "error": "empty message"}))
+    # P0-1: run/item_id is the idempotency key. Same key resent = cached reply, no new LLM call.
+    # Frontend sends both run and item_id as the same rid; accept either.
+    run_id = str(data.get("item_id") or data.get("run") or f"run-{int(time.time() * 1000)}")
+    delivery = str(data.get("delivery") or "steer")
+    session_id = _safe_sid(data.get("session"))
+    with RUNS_LOCK:
+        existing = RUNS.get(run_id)
+        if existing is not None and existing.get("done") and existing.get("reply") is not None:
+            log(f"/api/chat idempotent hit run={run_id}")
+            return ("respond", (200, {"ok": True, "reply": existing.get("reply"),
+                                      "tools": list(existing.get("tools", existing.get("logs", []))),
+                                      "run": run_id, "deduped": True,
+                                      "interrupted": existing.get("interrupted", False)}))
+        if existing is not None and not existing.get("done"):
+            # network retry of in-flight run: don't fork a second LLM loop
+            return ("respond", (409, {"ok": False, "error": f"already running run={run_id}",
+                                      "run": run_id, "running": True}))
+        # cross-restart idempotency: finished runs survive in SQLite
+        stored = _store_get(run_id)
+        if stored is not None:
+            log(f"/api/chat idempotent hit (store) run={run_id}")
+            return ("respond", (200, {"ok": True, "reply": stored.get("reply"),
+                                      "tools": stored.get("tools", []), "run": run_id, "deduped": True}))
+        # P0-2 queue mode: if any run is active, park this message instead of racing
+        if delivery == "queue":
+            active = [k for k, v in RUNS.items() if not v.get("done")]
+            if active:
+                RUNS[run_id] = {"logs": [], "done": True, "reply": None, "queued": True, "ts": time.time(),
+                                "message": user_msg, "model": model, "history": history[-60:], "system": system,
+                                "tools": [], "interrupted": False, "sid": session_id}
+                log(f"/api/chat queued run={run_id} behind={active}")
+                return ("respond", (200, {"ok": True, "queued": True, "run": run_id, "behind": active}))
+        RUNS[run_id] = {"logs": [], "done": False, "reply": None, "ts": time.time(), "steer": [],
+                        "stream": [], "thinking": [], "marks": [], "tools": [],
+                        "interrupted": False, "error": None, "sid": session_id}
+    return ("fresh", {"run_id": run_id, "model": model, "system": system,
+                      "history": history, "user_msg": user_msg, "session_id": session_id})
+
+
 def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     tool_logs = []
@@ -580,7 +761,7 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
             reply = (tail + "\n\n*(interrupted by user)*") if tail else "(interrupted by user)"
             if res.get("thinking"):
                 _append_thinking(tool_logs, live_logs, run_id, res["thinking"])
-            return (reply, tool_logs, messages, True)
+            return (_strip_compact_echo(messages, reply), tool_logs, messages, True)
         tcalls = res.get("tool_calls") or []
         m = {"role": "assistant", "content": res.get("content") or ""}
         if tcalls:
@@ -592,7 +773,7 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
             # P0-2: steered follow-ups extend the same run instead of starting a racy new one
             if _drain_steer(run_id, messages):
                 continue
-            return (m["content"] or "(empty)", tool_logs, messages, False)
+            return (_strip_compact_echo(messages, m["content"] or "(empty)"), tool_logs, messages, False)
         # Parse args sequentially (cheap), execute concurrently (Hermes pattern).
         # Bad JSON stays a per-call error (P0-5); question stays disabled.
         # Responses appended in tool_calls order (providers validate sequence).
@@ -615,7 +796,12 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
                 inline[tc_id] = ({"tool": name, "args": args, "result": result[:2000]}, result)
                 continue
             pending.append((tc_id, name, args))
-        for (tc_id, name, _args), (entry, result) in zip(pending, run_tool_calls(pending)):
+        # Web approval context: live runs park cards (approval.py), cron/subagent
+        # runs have no RUNS entry and keep the old deny-only behavior.
+        with RUNS_LOCK:
+            _rr = RUNS.get(run_id) if run_id else None
+        _ctx = {"run_id": run_id, "sid": (_rr.get("sid") or "")} if _rr is not None else None
+        for (tc_id, name, _args), (entry, result) in zip(pending, run_tool_calls(pending, _ctx)):
             # P0-4: model gets bounded preview, full text retained under .jobs/
             inline[tc_id] = (entry, _bound_for_model(result, name, tc_id))
         for tc in tcalls:
@@ -631,7 +817,7 @@ def run_agent(messages, model, max_steps=12, live_logs=None, run_id=None):
         _drain_steer(run_id, messages)
         if _is_interrupted(run_id):
             return ("(interrupted by user)", tool_logs, messages, True)
-    return ("(max tool steps reached)", tool_logs, messages, False)
+    return (_strip_compact_echo(messages, "(max tool steps reached)"), tool_logs, messages, False)
 
 
 def _authorized(handler, parsed) -> bool:
@@ -657,6 +843,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         log(f"-> {self.path} {code} ({len(body)}b)")
+
+    def _emit_result(self, rid, stored=None):
+        """Write one `result` event (final reply/tools) when known.
+
+        Lets two-phase clients resolve the turn from the stream alone;
+        reattached browsers get it on replay even after the POST is gone.
+        Best-effort: transport errors propagate to the caller's handler.
+        """
+        payload = None
+        with RUNS_LOCK:
+            run = RUNS.get(rid)
+            if run is not None and run.get("done") and run.get("reply") is not None:
+                payload = {"reply": run.get("reply"), "tools": run.get("tools", []),
+                           "interrupted": run.get("interrupted", False)}
+        if payload is None and stored is not None and stored.get("reply") is not None:
+            payload = {"reply": stored.get("reply"), "tools": stored.get("tools", []),
+                       "interrupted": False, "deduped": True}
+        if payload is not None:
+            self.wfile.write(f"event: result\ndata: {json.dumps(payload)}\n\n".encode())
+            self.wfile.flush()
 
     def _serve_event(self, rid):
         """SSE push for one run: replay past logs, stream new ones, close with 'done'. Keeps /api/progress for compat."""
@@ -700,16 +906,29 @@ class Handler(BaseHTTPRequestHandler):
             s_idx = len(_live.get("stream", []) or []) if _live else 0
             t_idx = len(_live.get("thinking", []) or []) if _live else 0
             m_idx = len(_live.get("marks", []) or []) if _live else 0
+            a_idx = len(_live.get("approval", []) or []) if _live else 0
         try:
             if s_full:
                 self.wfile.write(f"event: stream_full\ndata: {json.dumps({'t': s_full})}\n\n".encode())
             if t_full:
                 self.wfile.write(f"event: think_full\ndata: {json.dumps({'t': t_full})}\n\n".encode())
+            try:
+                # Reattach replay: a card parked before ES connected.
+                from approval import pending_for as _pending_for
+                _pa = _pending_for(rid)
+                if _pa is not None:
+                    self.wfile.write(f"event: approval\ndata: {json.dumps(_pa)}\n\n".encode())
+            except Exception:
+                pass
             for entry in (snap if snap is not None else (stored.get("tools") or [])):
                 self.wfile.write(f"data: {json.dumps(entry)}\n\n".encode())
                 idx += 1
             self.wfile.flush()
             if done or snap is None:
+                try:
+                    self._emit_result(rid, stored)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
                 self.wfile.write(f"event: done\ndata: {json.dumps({'done': True, 'n': idx})}\n\n".encode())
                 self.wfile.flush()
                 return
@@ -724,12 +943,16 @@ class Handler(BaseHTTPRequestHandler):
                     s_new = list(run.get("stream", []))
                     t_new = list(run.get("thinking", []))
                     m_new = list(run.get("marks", []))
+                    a_new = list(run.get("approval", []))
                 while s_idx < len(s_new):
                     self.wfile.write(f"event: stream\ndata: {json.dumps({'t': s_new[s_idx]})}\n\n".encode())
                     s_idx += 1
                 while t_idx < len(t_new):
                     self.wfile.write(f"event: think\ndata: {json.dumps({'t': t_new[t_idx]})}\n\n".encode())
                     t_idx += 1
+                while a_idx < len(a_new):
+                    self.wfile.write(f"event: approval\ndata: {json.dumps(a_new[a_idx])}\n\n".encode())
+                    a_idx += 1
                 while m_idx < len(m_new):
                     self.wfile.write(f"event: mark\ndata: {json.dumps(m_new[m_idx])}\n\n".encode())
                     m_idx += 1
@@ -744,6 +967,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     last_beat = _t.time()
                 _t.sleep(0.2)
+            try:
+                self._emit_result(rid)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             self.wfile.write(f"event: done\ndata: {json.dumps({'done': True, 'n': idx})}\n\n".encode())
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -788,6 +1015,48 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/event":
             q = urllib.parse.parse_qs(parsed.query or "")
             self._serve_event((q.get("run") or [""])[0])
+        elif parsed.path == "/api/chat/result":
+            # Outcome poll for two-phase runs (backstop behind the SSE result
+            # event). Reattach-safe: falls back to SQLite after RUNS eviction.
+            q = urllib.parse.parse_qs(parsed.query or "")
+            rid = (q.get("run") or [""])[0]
+            if not rid:
+                self.send_json({"ok": False, "error": "need run"}, 400)
+            else:
+                with RUNS_LOCK:
+                    run = dict(RUNS.get(rid) or {}) if rid in RUNS else None
+                if run is not None:
+                    if run.get("queued"):
+                        self.send_json({"ok": True, "run": rid, "queued": True, "done": True})
+                    elif not run.get("done"):
+                        self.send_json({"ok": True, "run": rid, "done": False})
+                    elif run.get("reply") is None:
+                        self.send_json({"ok": True, "run": rid, "done": True,
+                                        "error": run.get("error") or "run failed"})
+                    else:
+                        self.send_json({"ok": True, "run": rid, "done": True,
+                                        "reply": run.get("reply"), "tools": run.get("tools", []),
+                                        "interrupted": run.get("interrupted", False)})
+                    return
+                stored = _store_get(rid)
+                if stored is not None:
+                    self.send_json({"ok": True, "run": rid, "done": True,
+                                    "reply": stored.get("reply"),
+                                    "tools": stored.get("tools", []), "deduped": True})
+                else:
+                    self.send_json({"ok": False, "error": "unknown run"}, 404)
+        elif parsed.path == "/api/approval/pending":
+            q = urllib.parse.parse_qs(parsed.query or "")
+            rid = (q.get("run") or [""])[0]
+            if not rid:
+                self.send_json({"ok": False, "error": "need run"}, 400)
+            else:
+                try:
+                    from approval import pending_for as _pending_for
+                    p = _pending_for(rid)
+                except Exception:
+                    p = None
+                self.send_json({"ok": True, "run": rid, "pending": p})
         elif parsed.path == "/api/session":
             q = urllib.parse.parse_qs(parsed.query or "")
             sid = _safe_sid((q.get("id") or [""])[0])
@@ -837,86 +1106,51 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"ok": False, "error": str(e)}, 500)
         elif parsed.path == "/api/chat":
-            if not API_KEY:
-                self.send_json({"ok": False, "error": "MAXPLUS_API_KEY not set. export MAXPLUS_API_KEY=ccsk-... then restart server.py"}, 400)
+            # Blocking compat path: same admission + core as /api/chat/start,
+            # but waits for completion before responding.
+            action, obj = _chat_admit(data)
+            if action == "respond":
+                code, payload = obj
+                self.send_json(payload, code)
                 return
-            model = data.get("model") or DEFAULT_MODEL
-            live = get_live_models()
-            if model not in live:
-                self.send_json({"ok": False, "error": f"unknown model '{model}'. Valid: {', '.join(live)}"}, 400)
-                return
-            system = data.get("system") or ""
-            # Glow-up: assemble SOUL + AGENTS + memory snapshot around UI text.
-            # Falls back to raw UI text if prompt.py missing — UI contract unchanged.
-            try:
-                from prompt import build_system_prompt as _build_sys
-                system = _build_sys(system)
-            except Exception:
-                pass
-            history = data.get("history") or []
-            user_msg = (data.get("message") or "").strip()
-            if not user_msg:
-                self.send_json({"ok": False, "error": "empty message"}, 400)
-                return
-            messages = []
-            if system:
-                messages.append({"role": "system", "content": system})
-            # history: [{role, content}] from frontend (user/assistant text only)
-            for h in history[-60:]:
-                if h.get("role") in ("user", "assistant") and h.get("content"):
-                    messages.append({"role": h["role"], "content": h["content"]})
-            messages.append({"role": "user", "content": user_msg})
-            # P0-1: run/item_id is the idempotency key. Same key resent = cached reply, no new LLM call.
-            # Frontend sends both run and item_id as the same rid; accept either.
-            run_id = str(data.get("item_id") or data.get("run") or f"run-{int(time.time() * 1000)}")
-            delivery = str(data.get("delivery") or "steer")
+            _execute_chat(**obj)
             with RUNS_LOCK:
-                existing = RUNS.get(run_id)
-                if existing is not None and existing.get("done") and existing.get("reply") is not None:
-                    log(f"/api/chat idempotent hit run={run_id}")
-                    # read logs/tools outside lock copy already stored
-                    self.send_json({"ok": True, "reply": existing.get("reply"), "tools": list(existing.get("logs", [])), "run": run_id, "deduped": True})
-                    return
-                if existing is not None and not existing.get("done"):
-                    # network retry of in-flight run: don't fork a second LLM loop
-                    self.send_json({"ok": False, "error": f"already running run={run_id}", "run": run_id, "running": True}, 409)
-                    return
-                # cross-restart idempotency: finished runs survive in SQLite
-                stored = _store_get(run_id)
-                if stored is not None:
-                    log(f"/api/chat idempotent hit (store) run={run_id}")
-                    self.send_json({"ok": True, "reply": stored.get("reply"), "tools": stored.get("tools", []), "run": run_id, "deduped": True})
-                    return
-                # P0-2 queue mode: if any run is active, park this message instead of racing
-                if delivery == "queue":
-                    active = [k for k, v in RUNS.items() if not v.get("done")]
-                    if active:
-                        RUNS[run_id] = {"logs": [], "done": True, "reply": None, "queued": True, "ts": time.time(),
-                                        "message": user_msg, "model": model, "history": history[-60:], "system": system}
-                        log(f"/api/chat queued run={run_id} behind={active}")
-                        self.send_json({"ok": True, "queued": True, "run": run_id, "behind": active})
-                        return
-                RUNS[run_id] = {"logs": [], "done": False, "reply": None, "ts": time.time(), "steer": [],
-                                "stream": [], "thinking": [], "marks": []}
-                live = RUNS[run_id]["logs"]
-            _claim_start(run_id)
-            log(f"/api/chat model={model} run={run_id} msg_len={len(user_msg)} hist={len(history)} sys_len={len(system)}")
+                run = dict(RUNS.get(obj["run_id"]) or {})
+            if run.get("reply") is None:
+                self.send_json({"ok": False, "error": run.get("error") or "run failed",
+                                "run": obj["run_id"]}, 500)
+                return
+            self.send_json({"ok": True, "reply": run.get("reply"), "tools": run.get("tools", []),
+                            "run": obj["run_id"], "interrupted": run.get("interrupted", False)})
+        elif parsed.path == "/api/chat/start":
+            # Two-phase (Hermes pattern): admit, spawn the turn in background,
+            # return immediately. Browser streams via /api/event (15s heartbeat,
+            # replayable) and fetches the outcome via GET /api/chat/result —
+            # reattach-safe on flaky wifi/sleep-wake, unlike the blocking POST.
+            action, obj = _chat_admit(data)
+            if action == "respond":
+                code, payload = obj
+                self.send_json(payload, code)
+                return
+            t = threading.Thread(target=_execute_chat, kwargs=dict(obj),
+                                 name=f"chat-{obj['run_id']}", daemon=True)
+            t.start()
+            self.send_json({"ok": True, "run": obj["run_id"], "started": True}, 202)
+        elif parsed.path == "/api/approval/respond":
+            # Resolve a parked approval card (once/session/always/deny).
+            rid = str(data.get("run") or data.get("item_id") or "")
+            choice = str(data.get("choice") or "")
+            if not rid:
+                self.send_json({"ok": False, "error": "need run"}, 400)
+                return
             try:
-                reply, tool_logs, _, interrupted = run_agent(messages, model, live_logs=live, run_id=run_id)
-                with RUNS_LOCK:
-                    if run_id in RUNS:
-                        RUNS[run_id].update({"done": True, "reply": reply, "ts": time.time()})
-                _save_turn(_safe_sid(data.get("session")), user_msg, reply, model, tool_logs)
-                _claim_finish(run_id, reply, tool_logs, status="interrupted" if interrupted else "done")
-                log(f"/api/chat OK reply_len={len(reply)} tools={[t.get('tool') for t in tool_logs]} interrupted={interrupted}")
-                self.send_json({"ok": True, "reply": reply, "tools": tool_logs, "run": run_id, "interrupted": interrupted})
+                from approval import respond as _approval_respond
+                ok, msg = _approval_respond(rid, choice)
             except Exception as e:
-                with RUNS_LOCK:
-                    if run_id in RUNS:
-                        RUNS[run_id].update({"done": True, "ts": time.time()})
-                _claim_fail(run_id)
-                log(f"/api/chat ERROR: {e}")
-                self.send_json({"ok": False, "error": str(e)}, 500)
+                ok, msg = False, str(e)
+            log(f"/api/approval/respond run={rid} choice={choice} ok={ok}")
+            self.send_json({"ok": ok, "run": rid, "choice": choice,
+                            "error": None if ok else msg}, 200 if ok else 404)
         elif parsed.path == "/api/interrupt":
             # Esc interrupt: cooperative flag, run_agent stops at next Safe Step Boundary
             rid = str(data.get("run") or data.get("item_id") or "")

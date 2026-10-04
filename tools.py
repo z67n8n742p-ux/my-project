@@ -89,17 +89,24 @@ if _dotenv.exists():
 
 
 # ---------- bash (= v2 shell) ----------
-def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool = False) -> str:
-    """Execute shell commands. Mirrors v2 `shell` (workdir/timeout/background)."""
+def bash(command: str, workdir: str = ".", timeout: int = 120, background: bool = False, ctx=None) -> str:
+    """Execute shell commands. Mirrors v2 `shell` (workdir/timeout/background).
+
+    ctx: optional {"run_id", "sid"} for web runs — dangerous commands park an
+    approval card instead of denying outright. None = CLI/cron (old behavior).
+    """
     if not command or not command.strip():
         return "bash error: empty command"
     # Approval gate (Hermes DANGEROUS_PATTERNS): safe cmds pass with zero overhead.
     # Web/server never prompts (deny); CLI prompts on TTY (ask). Never raises.
     try:
-        from approval import check as _approval_check
-        import sys as _sys
-        _ask = _sys.stdin.isatty()
-        _allowed, _msg = _approval_check(command, default_ask=_ask)
+        from approval import check as _approval_check, check_web as _check_web
+        if isinstance(ctx, dict) and ctx.get("run_id"):
+            _allowed, _msg = _check_web(command, ctx.get("run_id", ""), ctx.get("sid", ""))
+        else:
+            import sys as _sys
+            _ask = _sys.stdin.isatty()
+            _allowed, _msg = _approval_check(command, default_ask=_ask)
         if not _allowed:
             return f"bash blocked: {_msg}"
     except Exception:
@@ -1102,13 +1109,17 @@ def session_search(query: str = "", limit: int = 10, role_filter: str = "") -> s
             c.close()
     except Exception:
         pass
-    # 2) jsonl fallback (pre-upgrade sessions)
+    # 2) jsonl fallback (pre-upgrade sessions). Bounded: newest 200 files,
+    # tail 200 lines each — full-directory scan used to grow without limit.
     try:
         hits = []
         if sessions_dir.exists():
-            for p in sorted(sessions_dir.glob("*.jsonl")):
+            files = sorted(sessions_dir.glob("*.jsonl"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)[:200]
+            for p in files:
                 try:
-                    for line in p.read_text().splitlines():
+                    lines = p.read_text().splitlines()[-200:]
+                    for line in lines:
                         if q.lower() in line.lower():
                             try:
                                 obj = json.loads(line)
@@ -1238,9 +1249,10 @@ def skill_manage(action: str = "list", name: str = "", content: str = "",
 
 
 # ---------- parallel runner (Hermes ThreadPoolExecutor pattern, minimal) ----------
-def run_tool_calls(calls):
+def run_tool_calls(calls, ctx=None):
     """Execute pre-parsed [(tc_id, name, args)] concurrently, order-restored.
 
+    ctx: optional {"run_id", "sid"} forwarded to execute_tool (web approval).
     Returns [(entry, result_str)] in input order. Single call runs inline
     (no thread overhead). Never raises — per-call errors become result strings.
     """
@@ -1249,7 +1261,7 @@ def run_tool_calls(calls):
     if len(calls) == 1:
         tc_id, name, args = calls[0]
         try:
-            result = execute_tool(name, args)
+            result = execute_tool(name, args, ctx)
         except Exception as e:
             result = f"tool {name} error: {e}"
         result = str(result)
@@ -1259,7 +1271,7 @@ def run_tool_calls(calls):
     def _one(item):
         tc_id, name, args = item
         try:
-            result = execute_tool(name, args)
+            result = execute_tool(name, args, ctx)
         except Exception as e:
             result = f"tool {name} error: {e}"
         result = str(result)
@@ -1641,12 +1653,12 @@ def compact_messages(messages, summarize_fn, keep_recent=20, max_msgs=60, max_ch
 
 
 # ---------- dispatcher + OpenAI schemas ----------
-def execute_tool(name: str, args: dict) -> str:
+def execute_tool(name: str, args: dict, ctx=None) -> str:
     args = args or {}
     try:
         if name == "bash":
             return bash(args.get("command", ""), args.get("workdir", "."),
-                        int(args.get("timeout", 120)), bool(args.get("background", False)))
+                        int(args.get("timeout", 120)), bool(args.get("background", False)), ctx)
         if name == "process":
             try:
                 _to = int(args.get("timeout", 30))

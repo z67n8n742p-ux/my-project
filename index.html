@@ -132,8 +132,8 @@ aside[data-slot="inspector"]{flex:1;border-left:1px solid var(--border);padding:
 .tool-group.collapsed .tool-group-body{display:none}
 .tool-group .tool{margin-top:0}
 /* scroll-to-bottom: overlay, no layout impact (hermes-webui pattern) */
-#jumpBtn{position:absolute;right:20px;bottom:88px;width:32px;height:32px;border-radius:50%;z-index:10;display:none;align-items:center;justify-content:center;background:var(--layer-2);border:1px solid var(--border-strong);font-size:14px}
-#jumpBtn.show{display:flex}
+#jumpBtn{position:absolute;right:20px;bottom:88px;width:32px;height:32px;border-radius:50%;z-index:10;display:flex;align-items:center;justify-content:center;background:var(--layer-2);border:1px solid var(--border-strong);font-size:14px;opacity:0;visibility:hidden;transition:opacity .2s ease,visibility .2s}
+#jumpBtn.show{opacity:1;visibility:visible}
 #jumpBtn.newmsg{width:auto;border-radius:999px;padding:0 12px;font-size:12px}
 @media (max-width:900px){
  aside[data-slot="sessions-sidebar"]{width:170px;min-width:170px}
@@ -157,6 +157,9 @@ h4{margin:12px 0 6px}
 .tool-head .caret{transition:transform .15s ease}
 .tool.open .tool-head .caret{transform:rotate(90deg)}
 .sess,.mopt,button,.tool-head{transition:background .15s ease}
+button{transition:background .15s ease,transform .12s ease}
+button:active{transform:scale(.96)}
+.copybtn{transition:opacity .15s ease}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent-text);border-radius:50%;animation:spin .9s linear infinite;vertical-align:-2px;margin-right:8px}
 .shimmer{background:linear-gradient(90deg,var(--muted) 40%,var(--text) 50%,var(--muted) 60%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shimmer-sweep 1.2s linear infinite}
 .cursor{animation:blink 1s step-end infinite;color:var(--muted)}
@@ -170,6 +173,19 @@ h4{margin:12px 0 6px}
 .copybtn{position:absolute;top:4px;right:4px;font-size:11px;padding:2px 8px;opacity:0}
 .msg pre:hover .copybtn{opacity:1}
 @media (hover:none){.copybtn{opacity:1}}
+/* P1: per-msg meta (timestamp + retry/edit actions) + context footer */
+.mmeta{display:flex;gap:8px;align-items:center;margin-top:6px;font-size:11px;color:var(--faint)}
+.msg.user .mmeta{color:rgba(255,255,255,.75)}
+.mts{white-space:nowrap}
+.mact{margin-left:auto;display:flex;gap:4px}
+.mact button{font-size:11px;padding:1px 8px;border-radius:6px;opacity:0}
+.msg:hover .mact button{opacity:1}
+@media (hover:none){.mact button{opacity:1}}
+.medit{width:100%;min-height:60px;font-family:var(--sans);font-size:13px;resize:vertical}
+#ctxRow{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted);padding:0 2px}
+#ctxBar{flex:1;height:4px;border-radius:2px;background:var(--border);overflow:hidden;min-width:60px}
+#ctxFill{height:100%;width:0%;background:var(--accent-text);transition:width .3s ease}
+#ctxTxt{white-space:nowrap}
 .tool-head:focus-visible,.tool-group-head:focus-visible{outline:2px solid var(--accent-text);outline-offset:-2px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head>
@@ -204,7 +220,18 @@ h4{margin:12px 0 6px}
 <main data-slot="session-chat-panel">
 <div id="msgs" data-slot="timeline"></div>
 <button id="jumpBtn" title="Scroll to latest">↓</button>
+<div id="apprCard" style="display:none;border:1px solid var(--accent);border-radius:8px;padding:8px 10px;margin:6px 0;background:var(--accent-bg,#fff8e6);animation:pop-in .18s ease-out">
+ <div style="font-size:13px"><b>⚠️ Approval needed</b> <span id="apprReason" style="color:var(--muted)"></span></div>
+ <div id="apprCmd" style="font-family:monospace;font-size:12px;margin:6px 0;white-space:pre-wrap;word-break:break-word"></div>
+ <div style="display:flex;gap:6px;flex-wrap:wrap">
+  <button onclick="respondApproval('once')">Allow once</button>
+  <button onclick="respondApproval('session')">Session</button>
+  <button onclick="respondApproval('always')">Always</button>
+  <button onclick="respondApproval('deny')">Deny</button>
+ </div>
+</div>
 <div id="row"><textarea id="in" rows="1" data-component="composer-input" placeholder="Ask anything, / for commands, @ for context…"></textarea><button id="sendBtn" onclick="send()">Send</button></div>
+<div id="ctxRow" title="Estimated context use for this session"><div id="ctxBar"><div id="ctxFill"></div></div><span id="ctxTxt">ctx —</span></div>
 </main>
 <aside data-slot="inspector">
 <h4>System prompt (your own)</h4>
@@ -313,7 +340,7 @@ function rerenderMsgs(){
   let b=document.createElement('button');b.textContent='New session';b.onclick=newSession;
   e.appendChild(b);box.appendChild(e);
  }
- h.forEach(m=>addMsg(m.role==='user'?'user':'assistant',m.content,true));
+ h.forEach((m,i)=>addMsg(m.role==='user'?'user':'assistant',m.content,true,m.ts,i));
  let past=cur().tools||[];
  if(past.length){window._toolGroup=null;ensureToolGroup('Earlier activity');past.forEach(x=>{try{renderTool(x,true);}catch(e){}});closeToolGroup();}
  box.scrollTop=box.scrollHeight;
@@ -358,7 +385,7 @@ function renderModels(f){
  list.style.display=flatShown.length?'block':'none';
  document.getElementById('modelFilter').setAttribute('aria-expanded',flatShown.length?'true':'false');
 }
-function pickModel(x){selectedModel=x;cur().model=x;saveStore();document.getElementById('modelNow').textContent=x;document.getElementById('modelList').style.display='none';document.getElementById('modelFilter').value=x;}
+function pickModel(x){selectedModel=x;cur().model=x;saveStore();document.getElementById('modelNow').textContent=x;document.getElementById('modelList').style.display='none';document.getElementById('modelFilter').value=x;try{updateCtx();}catch(e){}}
 document.addEventListener('click',e=>{if(!document.getElementById('modelWrap').contains(e.target))document.getElementById('modelList').style.display='none';});
 
 // ---------- tool renderer (one collapsible, family switch) ----------
@@ -444,10 +471,9 @@ function scrollIfPinned(){if(_pinned)scrollToBottom();else syncJump(true);}
 function stableMutate(fn){let el=msgsEl();if(!el||_pinned){fn();return;}let dist=el.scrollHeight-el.scrollTop;fn();el.scrollTop=Math.max(0,el.scrollHeight-dist);}
 function syncJump(newmsg){
  let b=document.getElementById('jumpBtn');if(!b)return;
- let row=document.getElementById('row');
- if(row)b.style.bottom=(row.offsetHeight+16)+'px';
- if(_pinned){b.className='';b.style.display='none';return;}
- b.className='show'+(newmsg?' newmsg':'');b.style.display='flex';
+ // no layout reads here — runs on every scroll/flush; row offset is set by autogrow
+ if(_pinned){b.classList.remove('show');return;}
+ b.classList.add('show');b.classList.toggle('newmsg',!!newmsg);
  b.textContent=newmsg?'↓ new messages':'↓';
 }
 function ensureToolGroup(label){
@@ -591,20 +617,80 @@ function md(src){
 document.addEventListener('click',e=>{
  if(e.target&&e.target.classList&&e.target.classList.contains('copybtn')){
   let code=e.target.parentElement.querySelector('code');
-  let done=()=>{e.target.textContent='Copied';setTimeout(()=>e.target.textContent='Copy',1200);};
+   let done=()=>{e.target.textContent='Copied!';setTimeout(()=>e.target.textContent='Copy',1200);};
   if(navigator.clipboard&&code)navigator.clipboard.writeText(code.textContent).then(done,done);
   else done();
  }
 });
-function addMsg(role,text,silent){
+function fmtT(ts){try{let d=new Date(ts||Date.now());let p=n=>String(n).padStart(2,'0');return{short:p(d.getHours())+':'+p(d.getMinutes()),full:d.toLocaleString()};}catch(e){return{short:'',full:''};}}
+function metaRow(role,ts,hidx){
+ let m=document.createElement('div');m.className='mmeta';
+ let t=document.createElement('span');t.className='mts';let f=fmtT(ts);t.textContent=f.short;t.title=f.full;m.appendChild(t);
+ let a=document.createElement('span');a.className='mact';
+ if(role==='user'){let b=document.createElement('button');b.textContent='Edit';b.title='Edit and regenerate from here';b.onclick=e=>{e.stopPropagation();startEdit(hidx);};a.appendChild(b);}
+ else{let b=document.createElement('button');b.textContent='↻ Retry';b.title='Retry from here';b.onclick=e=>{e.stopPropagation();retryFrom(hidx);};a.appendChild(b);}
+ m.appendChild(a);return m;
+}
+function attachMeta(el,role,ts,hidx){try{if(!el||el.querySelector('.mmeta'))return;el.dataset.hidx=hidx;el.appendChild(metaRow(role,ts,hidx));}catch(e){}}
+function retryFrom(hidx){
+ if(isRunning)return;
+ let h=cur().history||[];
+ let ui=(hidx==null||hidx<0)?h.length-1:hidx;
+ while(ui>=0&&h[ui].role!=='user')ui--;
+ if(ui<0||!h[ui].content)return;
+ let msg=h[ui].content;
+ cur().history=h.slice(0,ui);cur().updated=Date.now();saveStore();rerenderMsgs();
+ document.getElementById('in').value=msg;autogrow();send();
+}
+function startEdit(hidx){
+ if(isRunning)return;
+ let h=cur().history||[];
+ if(hidx<0||hidx>=h.length||h[hidx].role!=='user')return;
+ let el=document.querySelector('.msg.user[data-hidx="'+hidx+'"]');
+ if(!el)return;
+ let body=el.querySelector('.mbody');if(!body)return;
+ el.querySelectorAll('.mmeta').forEach(x=>x.remove());
+ let ta=document.createElement('textarea');ta.className='medit';ta.value=h[hidx].content;body.textContent='';body.appendChild(ta);ta.focus();
+ let m=document.createElement('div');m.className='mmeta';
+ let save=document.createElement('button');save.textContent='Save & resend';
+ save.onclick=()=>{let v=ta.value.trim();if(!v){rerenderMsgs();return;}cur().history=h.slice(0,hidx);cur().updated=Date.now();saveStore();rerenderMsgs();document.getElementById('in').value=v;autogrow();send();};
+ let cancel=document.createElement('button');cancel.textContent='Cancel';cancel.style.marginLeft='6px';cancel.onclick=()=>rerenderMsgs();
+ m.appendChild(save);m.appendChild(cancel);el.appendChild(m);
+}
+function ctxWin(m){m=String(m||'').toLowerCase();
+ if(m.indexOf('kimi')>=0||m.indexOf('mimo')>=0)return 256000;
+ if(m.indexOf('glm')>=0)return 192000;
+ if(m.indexOf('deepseek')>=0)return 128000;
+ return 128000;}
+function updateCtx(){
+ try{
+  let h=(typeof cur==='function'&&cur())?(cur().history||[]):[];
+  let chars=0,inC=0,outC=0;
+  h.forEach(x=>{let c=String(x.content||'').length;chars+=c;if(x.role==='user')inC+=c;else outC+=c;});
+  let draft=((document.getElementById('in')||{}).value||'').length;
+  let sys=((document.getElementById('sys')||{}).value||'').length;
+  let tok=Math.ceil((chars+draft+sys)/4);
+  let win=ctxWin(typeof selectedModel!=='undefined'?selectedModel:'');
+  let pct=Math.min(100,Math.round(tok/win*100));
+  let cost=(Math.ceil((inC+sys)/4)/1e6*0.5+Math.ceil(outC/4)/1e6*2);
+  let txt=document.getElementById('ctxTxt'),fill=document.getElementById('ctxFill');
+  if(txt){txt.textContent='~'+(tok>=1000?(tok/1000).toFixed(1)+'k':tok)+' tok · '+pct+'% · ~$'+cost.toFixed(3)+' (est)';txt.title='Window ~'+(win/1000)+'k ('+selectedModel+') · cost is a rough estimate';}
+  if(fill)fill.style.width=pct+'%';
+ }catch(e){}
+}
+function addMsg(role,text,silent,ts,hidx){
  let box=document.getElementById('msgs');
  box.querySelectorAll('.empty-state').forEach(x=>x.remove());
  let d=document.createElement('div');d.className='msg '+role;
- if(role==='assistant'&&text&&!String(text).startsWith('ERROR')&&!String(text).startsWith('... '))d.innerHTML=md(text);
- else d.textContent=text;
+ let body=document.createElement('div');body.className='mbody';
+ if(role==='assistant'&&text&&!String(text).startsWith('ERROR')&&!String(text).startsWith('... '))body.innerHTML=md(text);
+ else body.textContent=text;
+ d.appendChild(body);
+ if(ts)attachMeta(d,role,ts,hidx==null?-1:hidx);
  document.getElementById('msgs').appendChild(d);
  if(role==='user'){_pinned=true;scrollToBottom();}
  else if(!silent)scrollIfPinned();
+ try{updateCtx();}catch(e){}
  return d;
 }
 let currentRid=null, isRunning=false, steerBuffer=[];
@@ -617,10 +703,10 @@ async function send(){
  }
  if(filterVal&&filterVal!==selectedModel&&allModels.includes(filterVal)){pickModel(filterVal);}
  document.getElementById('modelNow').textContent=selectedModel;
- // P0-2: Safe Step Boundary — follow-ups while running go to /api/steer, never a racy second run
- let echoed=false;
- if(isRunning&&currentRid){
-  addMsg('user',msg);echoed=true;
+  // P0-2: Safe Step Boundary — follow-ups while running go to /api/steer, never a racy second run
+  let echoed=false, nowTs=Date.now();
+  if(isRunning&&currentRid){
+   addMsg('user',msg,false,nowTs,-1);echoed=true;
   try{
     let s=await (await fetch(apiUrl('/api/steer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid,message:msg})})).json();
    if(s.ok){steerBuffer.push(msg);return;}
@@ -629,7 +715,7 @@ async function send(){
    addMsg('assistant','... previous run finished, sending as new chat ...');
   }catch(e){steerBuffer.push(msg);return;}
  }
- if(!echoed)addMsg('user',msg);
+  if(!echoed)var userEl=addMsg('user',msg,false,nowTs,-1);else var userEl=null;
  let history=cur().history||[];
  let sys=document.getElementById('sys').value;
  let model=selectedModel;
@@ -642,20 +728,39 @@ async function send(){
     let liveShown=0;
     // live token streaming (hermes-webui pattern: rAF-throttled appends into a
     // live bubble per assistant turn; thinking streams into a collapsible card)
-    let liveSegs=[{el:wait,text:'',streaming:false}], streamScheduled=false;
-    window._liveThinkCard=null;let liveThink='';
+    let liveSegs=[{el:wait,text:'',streaming:false,shown:0}], streamScheduled=false, lastFlush=0;
+    window._liveThinkCard=null;let liveThink='', thinkScheduled=false, lastThink=0;
     function curSeg(){return liveSegs[liveSegs.length-1];}
-    function liveFlush(){
+    function liveFlush(force){
      streamScheduled=false;
+     // 10fps cap: full-bubble rewrite each frame is O(n²) layout on long replies
+     let now=(window.performance&&performance.now())||Date.now();
+     if(!force&&now-lastFlush<100){if(!streamScheduled){streamScheduled=true;setTimeout(()=>liveFlush(true),100);}return;}
+     lastFlush=now;
      let s=curSeg();
      if(!s||!document.contains(s.el))return;
-     if(!s.streaming){s.streaming=true;s.el.textContent='';}
-     s.el.textContent=s.text+'▍';
+     if(!s.streaming){s.streaming=true;s.el.textContent='';s.shown=0;}
+     // incremental: append only the delta, keep a live caret span at the end
+     if(!s.caret||!document.contains(s.caret)){s.caret=document.createElement('span');s.caret.className='cursor';s.caret.textContent='▍';s.el.appendChild(s.caret);}
+     let full=s.text||'', shown=s.shown||0;
+     if(full.length>shown){s.el.insertBefore(document.createTextNode(full.slice(shown)),s.caret);s.shown=full.length;}
      scrollIfPinned();
     }
     function liveAppend(t){
      curSeg().text+=t;
      if(!streamScheduled){streamScheduled=true;requestAnimationFrame(liveFlush);}
+    }
+    function liveThinkFlush(){
+     thinkScheduled=false;
+     lastThink=(window.performance&&performance.now())||Date.now();
+     let card=window._liveThinkCard;
+     if(card&&document.contains(card)){
+      // collapsed card: skip the O(n) rewrite, tooltip still updates
+      if(card.classList.contains('open')&&card._body)card._body.textContent=liveThink;
+     }
+     scrollIfPinned();
+     let pill=document.getElementById('livePill');
+     if(pill)pill.title='What the model is thinking now — click to jump\n\n'+liveThink.slice(-160);
     }
     function liveThinkAppend(t){
      liveThink+=t;
@@ -675,10 +780,8 @@ async function send(){
       stableMutate(()=>{curSeg().el.before(card);});
       window._liveThinkCard=card;
      }
-     window._liveThinkCard._body.textContent=liveThink;
-     scrollIfPinned();
-     let pill=document.getElementById('livePill');
-     if(pill)pill.title='What the model is thinking now — click to jump\n\n'+liveThink.slice(-160);
+     // ~3fps cap on the thinking body rewrite
+     if(!thinkScheduled){thinkScheduled=true;let now=(window.performance&&performance.now())||Date.now();setTimeout(liveThinkFlush,Math.max(0,300-(now-lastThink)));}
     }
     function liveStep(){
      // new assistant turn: freeze current bubble, open a fresh one at the end
@@ -689,11 +792,11 @@ async function send(){
      if(window._liveThinkCard)window._liveThinkCard.classList.remove('open');
      let nb=document.createElement('div');nb.className='msg assistant';
      document.getElementById('msgs').appendChild(nb);
-     liveSegs.push({el:nb,text:'',streaming:false});
+     liveSegs.push({el:nb,text:'',streaming:false,shown:0});
      scrollIfPinned();
     }
     function liveRestart(){
-     for(let s of liveSegs){s.text='';if(s.streaming){s.streaming=false;if(document.contains(s.el))s.el.textContent='';}}
+     for(let s of liveSegs){s.text='';s.shown=0;s.caret=null;if(s.streaming){s.streaming=false;if(document.contains(s.el))s.el.textContent='';}}
      if(window._liveThinkCard&&window._liveThinkCard.parentElement)window._liveThinkCard.remove();
      window._liveThinkCard=null;liveThink='';
     }
@@ -708,33 +811,72 @@ async function send(){
      });
      scrollIfPinned();
     }
-    let es=null;
+    let es=null, finalResult=null;
     function stopLive(){try{if(es)es.close();}catch(_){}es=null;}
+    // Approval cards (dangerous bash): pushed through the same SSE stream.
+    let apprRun=null;
+    function showApproval(p){
+     try{
+      apprRun=currentRid;
+      document.getElementById('apprReason').textContent='— '+((p&&p.reason)||'dangerous command');
+      document.getElementById('apprCmd').textContent=(p&&p.command)||'';
+      document.getElementById('apprCard').style.display='block';
+      scrollIfPinned();
+     }catch(_){}
+    }
+    function hideApproval(){try{document.getElementById('apprCard').style.display='none';}catch(_){}apprRun=null;}
     try{
      es=new EventSource(apiUrl('/api/event?run='+encodeURIComponent(rid)));
      es.onmessage=e=>{try{let log=JSON.parse(e.data);renderTool(log);liveShown++;}catch(_){}};
      es.addEventListener('stream',e=>{try{liveAppend(JSON.parse(e.data).t||'');}catch(_){}});
-     es.addEventListener('stream_full',e=>{try{let s=curSeg();s.text=JSON.parse(e.data).t||'';s.streaming=true;if(document.contains(s.el))s.el.textContent=s.text+'▍';scrollIfPinned();}catch(_){}});
+     es.addEventListener('stream_full',e=>{try{let s=curSeg();s.text=JSON.parse(e.data).t||'';s.shown=(s.text||'').length;s.streaming=true;if(document.contains(s.el))s.el.textContent=s.text+'▍';scrollIfPinned();}catch(_){}});
      es.addEventListener('think',e=>{try{liveThinkAppend(JSON.parse(e.data).t||'');}catch(_){}});
      es.addEventListener('think_full',e=>{try{liveThinkAppend(JSON.parse(e.data).t||'');}catch(_){}});
      es.addEventListener('mark',e=>{try{let m=JSON.parse(e.data);if(m.step)liveStep();else liveRestart();}catch(_){}});
+     es.addEventListener('approval',e=>{try{showApproval(JSON.parse(e.data));}catch(_){}});
+     // Two-phase completion: server ends the stream with result+done.
+     // Native EventSource auto-reattaches on drops; the server replays.
+     es.addEventListener('result',e=>{try{finalResult=JSON.parse(e.data);}catch(_){}});
      es.addEventListener('done',stopLive);
-     es.onerror=()=>{/* server closes stream at done; final sweep below covers gaps */};
+     es.onerror=()=>{/* auto-retry + result poll below cover drops; final sweep covers gaps */};
     }catch(e){es=null;}
-  try{
-   // P0-1: run+item_id is the idempotency key — network retry with same rid never forks a second LLM loop
-   let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
-   console.log('[send]',model,msg.slice(0,120));
-   let resp=await fetch(apiUrl('/api/chat'),{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)});
-   if(resp.status===401){stopLive();setRunning(false);isRunning=false;currentRid=null;closeToolGroup();finishLive(null);
-    if(askToken())addMsg('assistant','Token saved — resend your message.');
-    else addMsg('assistant','ERROR: unauthorized — server FORMY_TOKEN is set.');
-    return;}
-   if(resp.status===409){let t=await resp.text();throw new Error('already running (retry with same id is deduped): '+t.slice(0,200));}
-   if(!resp.ok){let t=await resp.text();throw new Error('HTTP '+resp.status+': '+t.slice(0,300));}
-    let r=await resp.json();
-    stopLive();
+   try{
+    // Two-phase (hermes pattern): POST /start returns fast (no idle-die on flaky
+    // wifi), reply arrives via SSE result event, /api/chat/result poll backstops.
+    // P0-1: run+item_id is the idempotency key — retry with same rid never forks a second loop.
+    let payload={message:msg,history,model,system:sys,run:rid,item_id:rid,delivery:'steer',session:activeId};
+    console.log('[send]',model,msg.slice(0,120));
+    let resp=await fetch(apiUrl('/api/chat/start'),{method:'POST',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify(payload)});
+    if(resp.status===401){stopLive();setRunning(false);isRunning=false;currentRid=null;closeToolGroup();finishLive(null);
+     if(askToken())addMsg('assistant','Token saved — resend your message.');
+     else addMsg('assistant','ERROR: unauthorized — server FORMY_TOKEN is set.');
+     return;}
+    if(resp.status===409){let t=await resp.text();throw new Error('already running (retry with same id is deduped): '+t.slice(0,200));}
+    if(!resp.ok){let t=await resp.text();throw new Error('HTTP '+resp.status+': '+t.slice(0,300));}
+     let s=await resp.json();
+     let r;
+     if(s.queued||s.reply!==undefined||s.deduped){r=s;stopLive();}
+     else{
+      r=await new Promise((resolve)=>{
+       let fails=0;
+       let poll=setInterval(async ()=>{
+        if(finalResult){clearInterval(poll);resolve(Object.assign({ok:true,run:rid},finalResult));return;}
+        try{
+         let a=await (await fetch(apiUrl('/api/approval/pending?run='+encodeURIComponent(rid)))).json();
+         if(a.ok&&a.pending)showApproval(a.pending);
+        }catch(_){}
+        try{
+         let j=await (await fetch(apiUrl('/api/chat/result?run='+encodeURIComponent(rid)))).json();
+         if(j.ok&&j.done&&j.reply!==undefined){clearInterval(poll);resolve({ok:true,run:rid,reply:j.reply,tools:j.tools||[],interrupted:!!j.interrupted,deduped:!!j.deduped});}
+         else if(j.ok&&j.queued){clearInterval(poll);resolve({ok:true,run:rid,queued:true});}
+         else if(j.ok&&j.done){clearInterval(poll);resolve({ok:false,run:rid,error:j.error||'run failed'});}
+         else if(!j.ok){if(++fails>=4){clearInterval(poll);resolve({ok:false,run:rid,error:j.error||'run lost'});}}
+        }catch(e){if(++fails>=8){clearInterval(poll);resolve({ok:false,run:rid,error:'result poll failed — is server.py running?'});}}
+       },1500);
+       });
+      stopLive();hideApproval();
+     }
     setRunning(false);
     // streamed text stays in place: render final markdown into the live bubbles.
     // No stream arrived (deduped/queued/error) → old path: single bubble.
@@ -742,11 +884,19 @@ async function send(){
     finishLive(r.reply);
     if(!r.ok){if(!anyLive)addMsg('assistant','ERROR: '+r.error);closeToolGroup();isRunning=false;currentRid=null;return;}
     if(r.queued){addMsg('assistant','... queued behind running session ...');closeToolGroup();isRunning=false;currentRid=null;return;}
-    if(!anyLive)addMsg('assistant',r.reply+(r.deduped?' (deduped retry)':''));
-   history.push({role:'user',content:msg});
-   steerBuffer.forEach(m=>history.push({role:'user',content:m}));
-   history.push({role:'assistant',content:r.reply});
+     if(!anyLive)var freshEl=addMsg('assistant',r.reply+(r.deduped?' (deduped retry)':''),false,Date.now(),-1);
+   let uo={role:'user',content:msg,ts:nowTs};
+   history.push(uo);
+   steerBuffer.forEach(m=>history.push({role:'user',content:m,ts:nowTs}));
+   let ao={role:'assistant',content:r.reply,ts:Date.now()};
+   history.push(ao);
     cur().history=history.slice(-60);cur().updated=Date.now();
+    try{
+     let ui2=cur().history.indexOf(uo), ai2=cur().history.indexOf(ao);
+     if(userEl)attachMeta(userEl,'user',nowTs,ui2);
+     if(typeof freshEl!=='undefined'&&freshEl)attachMeta(freshEl,'assistant',ao.ts,ai2);
+     else try{attachMeta(curSeg().el,'assistant',ao.ts,ai2);}catch(_){}
+    }catch(_){}
     // persist tool logs with the session (restored on switch, included in export)
     try{cur().tools=((cur().tools||[]).concat(r.tools||[])).slice(-200);}catch(e){}
    if((cur().title||'').startsWith('New session'))cur().title=msg.slice(0,50);
@@ -762,7 +912,13 @@ async function interrupt(){
  if(!isRunning||!currentRid)return;
  try{await fetch(apiUrl('/api/interrupt'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:currentRid})});}catch(e){}
 }
-function autogrow(){let t=document.getElementById('in');t.style.height='auto';t.style.height=Math.min(120,t.scrollHeight)+'px';}
+async function respondApproval(choice){
+ let rid=(typeof apprRun!=='undefined'&&apprRun)||currentRid;
+ try{if(typeof hideApproval!=='undefined')hideApproval();}catch(_){}
+ if(!rid)return;
+ try{await fetch(apiUrl('/api/approval/respond'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run:rid,choice})});}catch(e){}
+}
+function autogrow(){let t=document.getElementById('in');t.style.height='auto';t.style.height=Math.min(120,t.scrollHeight)+'px';let b=document.getElementById('jumpBtn'),row=document.getElementById('row'),cr=document.getElementById('ctxRow');if(b&&row)b.style.bottom=(row.offsetHeight+(cr?cr.offsetHeight+6:0)+16)+'px';try{updateCtx();}catch(e){}}
 document.getElementById('in').addEventListener('input',autogrow);
 document.getElementById('in').addEventListener('keydown',e=>{
  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
